@@ -80,7 +80,7 @@ export async function handleDiscovery(res: import('node:http').ServerResponse): 
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
     code_challenge_methods_supported: ['S256'],
     scopes_supported: ['openid', 'profile'],
-    claims_supported: ['sub', 'name', 'dept', 'roles']
+    claims_supported: ['sub', 'name', 'dept', 'roles', 'dingtalk']
   })
 }
 
@@ -181,7 +181,7 @@ export async function handlePasswordLogin(req: import('node:http').IncomingMessa
   }
 
   audit({ event: 'login_password', ok: true, sub: user.sub, client_id: tx.client_id, ip })
-  const session = createSession(user.sub, user.name, user.dept, 'pwd')
+  const session = createSession(user.sub, user.name, user.dept, 'pwd', user.dingtalkUserId)
   finishTx(txId)
   issueCodeRedirect(res, tx, session)
 }
@@ -229,7 +229,7 @@ export async function handleDingtalkCallback(req: import('node:http').IncomingMe
       return html(res, 403, messagePage('账号已禁用', '该账号已离职或被停用,如属误判请联系管理员', false))
     }
     audit({ event: 'login_qr', ok: true, sub: user.sub, client_id: tx.client_id, ip })
-    const session = createSession(user.sub, user.name, user.dept, 'qr')
+    const session = createSession(user.sub, user.name, user.dept, 'qr', user.dingtalkUserId)
     finishTx(tx.id)
     issueCodeRedirect(res, tx, session)
   } catch (err) {
@@ -271,11 +271,11 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
       audit({ event: 'token_refresh', ok: false, client_id: clientId, ip, detail: 'refresh_token 无效/过期/客户端不匹配' })
       return json(res, 400, { error: 'invalid_grant', error_description: 'refresh_token 无效或已过期' })
     }
-    const newRefresh = issueRefreshToken(old.sub, old.name, old.dept, clientId)
+    const newRefresh = issueRefreshToken(old.sub, old.name, old.dept, clientId, old.dingtalkUserId)
     const now = Math.floor(Date.now() / 1000)
     const { privateKey, kid } = await getSigningKey()
     const roles = expandRoles(client, old.dept)
-    const accessToken = await new SignJWT({ scope: 'openid profile', dept: old.dept, roles, name: old.name })
+    const accessToken = await new SignJWT({ scope: 'openid profile', dept: old.dept, roles, name: old.name, ...dingtalkClaim(old.dingtalkUserId) })
       .setProtectedHeader({ alg: 'RS256', kid })
       .setIssuer(config.issuer)
       .setSubject(old.sub)
@@ -283,7 +283,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
       .setIssuedAt(now)
       .setExpirationTime(now + 3600)
       .sign(privateKey)
-    const idToken = await new SignJWT({ name: old.name, dept: old.dept, roles })
+    const idToken = await new SignJWT({ name: old.name, dept: old.dept, roles, ...dingtalkClaim(old.dingtalkUserId) })
       .setProtectedHeader({ alg: 'RS256', kid })
       .setIssuer(config.issuer)
       .setSubject(old.sub)
@@ -326,7 +326,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
   const now = Math.floor(Date.now() / 1000)
   const { privateKey, kid } = await getSigningKey()
 
-  const idToken = await new SignJWT({ name: codeRecord.name, dept: codeRecord.dept, roles, ...(codeRecord.nonce ? { nonce: codeRecord.nonce } : {}) })
+  const idToken = await new SignJWT({ name: codeRecord.name, dept: codeRecord.dept, roles, ...dingtalkClaim(codeRecord.dingtalkUserId), ...(codeRecord.nonce ? { nonce: codeRecord.nonce } : {}) })
     .setProtectedHeader({ alg: 'RS256', kid })
     .setIssuer(config.issuer)
     .setSubject(codeRecord.sub)
@@ -335,7 +335,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
     .setExpirationTime(now + 600)
     .sign(privateKey)
 
-  const accessToken = await new SignJWT({ scope: 'openid profile', dept: codeRecord.dept, roles, name: codeRecord.name })
+  const accessToken = await new SignJWT({ scope: 'openid profile', dept: codeRecord.dept, roles, name: codeRecord.name, ...dingtalkClaim(codeRecord.dingtalkUserId) })
     .setProtectedHeader({ alg: 'RS256', kid })
     .setIssuer(config.issuer)
     .setSubject(codeRecord.sub)
@@ -344,7 +344,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
     .setExpirationTime(now + 3600)
     .sign(privateKey)
 
-  const refreshToken = issueRefreshToken(codeRecord.sub, codeRecord.name, codeRecord.dept, clientId)
+  const refreshToken = issueRefreshToken(codeRecord.sub, codeRecord.name, codeRecord.dept, clientId, codeRecord.dingtalkUserId)
   audit({ event: 'token', ok: true, sub: codeRecord.sub, client_id: clientId, ip })
   json(res, 200, {
     access_token: accessToken,
@@ -364,7 +364,9 @@ export async function handleUserinfo(req: import('node:http').IncomingMessage, r
   }
   try {
     const { payload } = await jwtVerify(auth.slice(7), getPublicKey(), { issuer: config.issuer })
-    json(res, 200, { sub: payload.sub, name: payload.name, dept: payload.dept, roles: payload.roles })
+    const claims: Record<string, unknown> = { sub: payload.sub, name: payload.name, dept: payload.dept, roles: payload.roles }
+    if (payload.dingtalk) claims.dingtalk = payload.dingtalk
+    json(res, 200, claims)
   } catch (err) {
     if (process.env.SSO_DEBUG) console.log('[debug] userinfo verify error:', (err as Error).message)
     json(res, 401, { error: 'invalid_token' })
@@ -433,6 +435,11 @@ export async function handleProfilePassword(req: import('node:http').IncomingMes
 }
 
 // ---- 工具 ----
+
+/** 仅当目录登记了钉钉号才下发 dingtalk claim(空值/缺失时不出现该 claim,保持向后兼容) */
+function dingtalkClaim(dingtalkUserId?: string): Record<string, string> {
+  return dingtalkUserId ? { dingtalk: dingtalkUserId } : {}
+}
 
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a, 'utf-8')

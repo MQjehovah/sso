@@ -41,7 +41,9 @@ function setupFixtures() {
   const users = [
     { sub: '10001', name: '张三', dept: '平台组', mobile: '13800000001', dingtalkUserId: '10001', status: 'active', passwordHash: hashPassword('pass123') },
     { sub: '10002', name: '李四', dept: '业务组', mobile: '13800000002', dingtalkUserId: '10002', status: 'disabled' },
-    { sub: '10003', name: '王五', dept: '平台组', mobile: '13800000003', dingtalkUserId: '10003', status: 'active' }
+    { sub: '10003', name: '王五', dept: '平台组', mobile: '13800000003', dingtalkUserId: '10003', status: 'active' },
+    // 无钉钉号的用户:验证 dingtalk claim 空值时不下发
+    { sub: '10004', name: '赵六', dept: '平台组', mobile: '13800000004', dingtalkUserId: '', status: 'active', passwordHash: hashPassword('pass456') }
   ]
   writeFileSync(new URL('./data/users.json', import.meta.url), JSON.stringify(users, null, 2))
 }
@@ -181,9 +183,14 @@ async function main() {
       nonce: 'n1'
     })
     assert('id_token 验签通过且 sub/roles 正确', claims1.sub === '10001' && JSON.stringify(claims1.roles) === JSON.stringify(['admin']))
+    assert('id_token 携带 dingtalk claim(目录有钉钉号)', claims1.dingtalk === '10001')
 
     const info = await oidc.fetchUserInfo(configuration, grant1.access_token, '10001')
     assert('userinfo 返回用户信息', info.sub === '10001' && info.name === '张三')
+    assert('userinfo 返回 dingtalk', info.dingtalk === '10001')
+
+    const { payload: atClaims1 } = await jwtVerify(grant1.access_token, JWKS, { issuer: SSO, audience: 'test-web' })
+    assert('access_token 携带 dingtalk claim', atClaims1.dingtalk === '10001')
 
     // ---- refresh token 流程 ----
     assert('授权码响应发放 refresh_token', typeof grant1.refresh_token === 'string' && grant1.refresh_token.length > 20)
@@ -199,6 +206,7 @@ async function main() {
     const JW2 = crjs(new URL(`${SSO}/.well-known/jwks.json`))
     const rfClaims = await jv2(rfBody.access_token, JW2, { issuer: SSO, audience: 'test-web' })
     assert('刷新后的 access_token 验签有效', rfClaims.payload.sub === '10001')
+    assert('刷新后的 access_token 携带 dingtalk claim', rfClaims.payload.dingtalk === '10001')
     const rfReuse = await fetch(`${SSO}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -213,6 +221,32 @@ async function main() {
       body: `grant_type=authorization_code&code=${new URL(cbUrl1).searchParams.get('code')}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&client_id=test-web&client_secret=test-secret`
     })
     assert('授权码一次性(code 复用被拒)', reuseRes.status === 400)
+
+    // ---- 无钉钉号用户:签发的 token/userinfo 均不含 dingtalk claim ----
+    const jarNo = new Jar()
+    const vNo = oidc.randomPKCECodeVerifier()
+    const auNo = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid profile', state: 'sno', nonce: 'nno',
+      code_challenge: await oidc.calculatePKCECodeChallenge(vNo), code_challenge_method: 'S256'
+    })
+    const rNo1 = await ssoFetch(jarNo, auNo, { redirect: 'manual' })
+    const txNo = new URL(rNo1.headers.get('location'), SSO).searchParams.get('tx')
+    const rNoLogin = await ssoFetch(jarNo, `${SSO}/login/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${txNo}&username=10004&password=pass456`,
+      redirect: 'manual'
+    })
+    const cbNo = rNoLogin.headers.get('location') ?? ''
+    const grantNo = await oidc.authorizationCodeGrant(configuration, new URL(cbNo), {
+      expectedState: 'sno', expectedNonce: 'nno', pkceCodeVerifier: vNo
+    })
+    const { payload: claimsNo } = await jwtVerify(grantNo.id_token, JWKS, { issuer: SSO, audience: 'test-web', nonce: 'nno' })
+    assert('无钉钉号用户 id_token 不含 dingtalk claim', claimsNo.sub === '10004' && !('dingtalk' in claimsNo))
+    const { payload: atNo } = await jwtVerify(grantNo.access_token, JWKS, { issuer: SSO, audience: 'test-web' })
+    assert('无钉钉号用户 access_token 不含 dingtalk claim', !('dingtalk' in atNo))
+    const infoNo = await oidc.fetchUserInfo(configuration, grantNo.access_token, '10004')
+    assert('无钉钉号用户 userinfo 不含 dingtalk', !('dingtalk' in infoNo))
 
     // 客户端认证失败
     const badClient = await fetch(`${SSO}/token`, {
@@ -283,6 +317,7 @@ async function main() {
     })
     const { payload: claims3 } = await jwtVerify(grant3.id_token, JWKS, { issuer: SSO, audience: 'test-web', nonce: 'n3' })
     assert('扫码 id_token 验签通过(sub=10003)', claims3.sub === '10003')
+    assert('扫码通道 id_token 也携带 dingtalk claim', claims3.dingtalk === '10003')
 
     // ---- 密码激活(扫码后 10 分钟内免当前密码) ----
     const sid = jar2.cookies.get('sso_sid') ?? ''

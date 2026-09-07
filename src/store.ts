@@ -13,6 +13,8 @@ export interface SsoSession {
   sub: string
   name: string
   dept: string
+  /** 钉钉号(目录有值才记录,用于下发 dingtalk claim;空则省略) */
+  dingtalkUserId?: string
   /** 认证方式:qr(钉钉扫码)| pwd(账号密码) */
   authMode: 'qr' | 'pwd'
   /** 会话建立时间(用于扫码后 10 分钟内免验证设置初始密码) */
@@ -55,7 +57,7 @@ function prune(): void {
   }
 }
 
-export function createSession(sub: string, name: string, dept: string, authMode: 'qr' | 'pwd'): SsoSession {
+export function createSession(sub: string, name: string, dept: string, authMode: 'qr' | 'pwd', dingtalkUserId?: string): SsoSession {
   ensureLoaded()
   prune()
   const session: SsoSession = {
@@ -63,6 +65,7 @@ export function createSession(sub: string, name: string, dept: string, authMode:
     sub,
     name,
     dept,
+    dingtalkUserId: dingtalkUserId || undefined,
     authMode,
     createdAt: Date.now(),
     expiresAt: Date.now() + config.sessionTtlMs
@@ -112,6 +115,8 @@ export interface AuthCode {
   sub: string
   name: string
   dept: string
+  /** 钉钉号(随 code 透传,供换 token 时签发 dingtalk claim;空则省略) */
+  dingtalkUserId?: string
   nonce?: string
   code_challenge?: string
   expires_at: number
@@ -128,6 +133,8 @@ export interface RefreshTokenRecord {
   sub: string
   name: string
   dept: string
+  /** 钉钉号(随 refresh token 透传,刷新时用于签发 dingtalk claim;空则省略) */
+  dingtalkUserId?: string
   client_id: string
   expires_at: number
 }
@@ -159,25 +166,25 @@ function rtPersist(): void {
 }
 
 /** 签发 refresh token(绑定用户与客户端,7 天有效) */
-export function issueRefreshToken(sub: string, name: string, dept: string, clientId: string): string {
+export function issueRefreshToken(sub: string, name: string, dept: string, clientId: string, dingtalkUserId?: string): string {
   rtLoad()
   const now = Date.now()
   for (const [t, r] of refreshTokens) if (r.expires_at <= now) refreshTokens.delete(t)
   const token = randomBytes(32).toString('hex')
-  refreshTokens.set(token, { token, sub, name, dept, client_id: clientId, expires_at: now + RT_TTL })
+  refreshTokens.set(token, { token, sub, name, dept, dingtalkUserId: dingtalkUserId || undefined, client_id: clientId, expires_at: now + RT_TTL })
   rtPersist()
   return token
 }
 
 /** 校验并轮换:成功返回用户信息并废弃旧 token(调用方应签发新 refresh token) */
-export function consumeRefreshToken(token: string, clientId: string): { sub: string; name: string; dept: string } | null {
+export function consumeRefreshToken(token: string, clientId: string): { sub: string; name: string; dept: string; dingtalkUserId?: string } | null {
   rtLoad()
   const r = refreshTokens.get(token)
   if (!r) return null
   refreshTokens.delete(token)
   rtPersist()
   if (r.client_id !== clientId || r.expires_at <= Date.now()) return null
-  return { sub: r.sub, name: r.name, dept: r.dept }
+  return { sub: r.sub, name: r.name, dept: r.dept, dingtalkUserId: r.dingtalkUserId }
 }
 
 /** 登出时吊销该用户在某客户端下的全部 refresh token */
@@ -227,6 +234,7 @@ export function issueCode(tx: PendingTx, session: SsoSession): string {
     sub: session.sub,
     name: session.name,
     dept: session.dept,
+    dingtalkUserId: session.dingtalkUserId,
     nonce: tx.nonce,
     code_challenge: tx.code_challenge,
     expires_at: Date.now() + config.codeTtlMs,
