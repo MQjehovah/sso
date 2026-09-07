@@ -1,0 +1,446 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { SignJWT, jwtVerify } from 'jose'
+import { config } from './config.ts'
+import { getClient, expandRoles } from './clients.ts'
+import { audit } from './audit.ts'
+import { rateLimit } from './ratelimit.ts'
+import { getSigningKey, getPublicJwk, getPublicKey } from './keys.ts'
+import {
+  createSession, getSession, destroySession,
+  putTx, takeTx, finishTx, issueCode, consumeCode,
+  issueRefreshToken, consumeRefreshToken, revokeRefreshTokens,
+  type PendingTx, type SsoSession
+} from './store.ts'
+import { createDirectory } from './directory.ts'
+import { createPasswordVerifier } from './password.ts'
+import { buildScanUrl, newDingtalkState, exchangeIdentity } from './dingtalk.ts'
+import { config as cfgAll } from './config.ts'
+import { loginPage, messagePage, profilePage } from './render.ts'
+
+const directory = createDirectory()
+const verifier = createPasswordVerifier()
+
+/** 钉钉 state → 登录事务(防回调伪造) */
+const dingtalkStates = new Map<string, { txId: string; created_at: number }>()
+
+export function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!header) return out
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=')
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim())
+  }
+  return out
+}
+
+function redirect(res: import('node:http').ServerResponse, location: string): void {
+  res.writeHead(302, { Location: location })
+  res.end()
+}
+
+function html(res: import('node:http').ServerResponse, status: number, body: string): void {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' })
+  res.end(body)
+}
+
+function json(res: import('node:http').ServerResponse, status: number, payload: unknown, headers?: Record<string, string>): void {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
+  res.end(JSON.stringify(payload))
+}
+
+async function readBody(req: import('node:http').IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const c of req) chunks.push(c as Buffer)
+  return Buffer.concat(chunks)
+}
+
+function formToObject(body: Buffer): Record<string, string> {
+  return Object.fromEntries(new URLSearchParams(body.toString('utf-8')))
+}
+
+function clientIp(req: import('node:http').IncomingMessage): string {
+  return req.socket.remoteAddress ?? 'unknown'
+}
+
+// ---- discovery / jwks ----
+
+export async function handleDiscovery(res: import('node:http').ServerResponse): Promise<void> {
+  const iss = config.issuer
+  json(res, 200, {
+    issuer: iss,
+    authorization_endpoint: `${iss}/authorize`,
+    token_endpoint: `${iss}/token`,
+    userinfo_endpoint: `${iss}/userinfo`,
+    jwks_uri: `${iss}/.well-known/jwks.json`,
+    end_session_endpoint: `${iss}/logout`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    subject_types_supported: ['public'],
+    id_token_signing_alg_values_supported: ['RS256'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+    code_challenge_methods_supported: ['S256'],
+    scopes_supported: ['openid', 'profile'],
+    claims_supported: ['sub', 'name', 'dept', 'roles']
+  })
+}
+
+export async function handleJwks(res: import('node:http').ServerResponse): Promise<void> {
+  json(res, 200, { keys: [getPublicJwk()] })
+}
+
+// ---- authorize ----
+
+export async function handleAuthorize(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, url: URL): Promise<void> {
+  const ip = clientIp(req)
+  if (!rateLimit(`authorize:${ip}`, 60, 60_000)) {
+    return html(res, 429, messagePage('请求过于频繁', '请稍后再试', false))
+  }
+  const q = url.searchParams
+  const client = getClient(q.get('client_id'))
+  const redirectUri = q.get('redirect_uri') ?? ''
+  if (!client || !client.redirect_uris.includes(redirectUri)) {
+    return html(res, 400, messagePage('无效的接入方', 'client_id 或 redirect_uri 未注册', false))
+  }
+  if (q.get('response_type') !== 'code') {
+    return html(res, 400, messagePage('不支持的反应类型', '仅支持 response_type=code', false))
+  }
+  const scope = q.get('scope') ?? ''
+  if (!scope.split(' ').includes('openid')) {
+    return html(res, 400, messagePage('缺少 scope', '必须包含 openid', false))
+  }
+
+  const tx: PendingTx = {
+    id: randomBytes(16).toString('hex'),
+    client_id: client.client_id,
+    redirect_uri: redirectUri,
+    scope,
+    state: q.get('state') ?? undefined,
+    nonce: q.get('nonce') ?? undefined,
+    code_challenge: q.get('code_challenge') ?? undefined,
+    created_at: Date.now()
+  }
+  if (tx.code_challenge && q.get('code_challenge_method') !== 'S256') {
+    return html(res, 400, messagePage('不支持的 PKCE 方法', '仅支持 S256', false))
+  }
+  putTx(tx)
+
+  // 已有 SSO 会话 → 直接发 code(单点登录的落点)
+  const cookies = parseCookies(req.headers.cookie)
+  const session = getSession(cookies['sso_sid'])
+  if (session) {
+    return issueCodeRedirect(res, tx, session)
+  }
+  redirect(res, `/login?tx=${tx.id}&tab=qr`)
+}
+
+function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingTx, session: SsoSession): void {
+  const code = issueCode(tx, session)
+  const params = new URLSearchParams({ code, ...(tx.state ? { state: tx.state } : {}) })
+  // 认证完成的同一响应下发会话 Cookie(单点登录凭据)
+  res.setHeader('Set-Cookie', [
+    `sso_sid=${session.sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}`
+  ])
+  redirect(res, `${tx.redirect_uri}${tx.redirect_uri.includes('?') ? '&' : '?'}${params.toString()}`)
+}
+
+// ---- 登录页与双通道 ----
+
+export async function handleLoginPage(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, url: URL): Promise<void> {
+  const txId = url.searchParams.get('tx') ?? ''
+  const tx = takeTx(txId)
+  if (!tx) {
+    return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
+  }
+  const client = getClient(tx.client_id)
+  const qrEnabled = cfgAll.dingtalkConfigured
+  const tab = url.searchParams.get('tab') === 'pwd' || !qrEnabled ? 'pwd' : 'qr'
+  const error = url.searchParams.get('error') ?? undefined
+  html(res, 200, loginPage({ txId, tab, clientName: client?.name, error, dingtalkEnabled: qrEnabled }))
+}
+
+export async function handlePasswordLogin(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, url: URL): Promise<void> {
+  const ip = clientIp(req)
+  if (!rateLimit(`pwd:${ip}`, 10, 60_000)) {
+    return html(res, 429, messagePage('尝试过于频繁', '请 1 分钟后再试', false))
+  }
+  const form = formToObject(await readBody(req))
+  const txId = form.tx ?? ''
+  const tx = takeTx(txId)
+  if (!tx) {
+    return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
+  }
+  const client = getClient(tx.client_id)
+  const username = (form.username ?? '').trim()
+  const password = form.password ?? ''
+
+  const user = await verifier.verify(username, password)
+  if (!user || user.status !== 'active') {
+    audit({ event: 'login_password', ok: false, sub: user?.sub, ip, detail: user ? '账号已禁用' : '凭据错误' })
+    const err = encodeURIComponent(user ? '账号已被禁用,请联系管理员' : '工号/手机号或密码不正确')
+    return redirect(res, `/login?tx=${txId}&tab=pwd&error=${err}`)
+  }
+
+  audit({ event: 'login_password', ok: true, sub: user.sub, client_id: tx.client_id, ip })
+  const session = createSession(user.sub, user.name, user.dept, 'pwd')
+  finishTx(txId)
+  issueCodeRedirect(res, tx, session)
+}
+
+export async function handleDingtalkStart(res: import('node:http').ServerResponse, url: URL): Promise<void> {
+  if (!cfgAll.dingtalkConfigured) {
+    return html(res, 400, messagePage('钉钉扫码未配置', '管理员尚未配置 DINGTALK_APP_KEY/SECRET,请使用账号密码登录', false))
+  }
+  const txId = url.searchParams.get('tx') ?? ''
+  const tx = takeTx(txId)
+  if (!tx) {
+    return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
+  }
+  const state = newDingtalkState()
+  dingtalkStates.set(state, { txId, created_at: Date.now() })
+  redirect(res, buildScanUrl(state))
+}
+
+export async function handleDingtalkCallback(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, url: URL): Promise<void> {
+  const ip = clientIp(req)
+  if (!rateLimit(`qr:${ip}`, 20, 60_000)) {
+    return html(res, 429, messagePage('请求过于频繁', '请稍后再试', false))
+  }
+  const state = url.searchParams.get('state') ?? ''
+  const authCode = url.searchParams.get('authCode') ?? url.searchParams.get('code') ?? ''
+  const bound = dingtalkStates.get(state)
+  dingtalkStates.delete(state)
+  if (!bound || Date.now() - bound.created_at > config.txTtlMs) {
+    return html(res, 400, messagePage('扫码状态已过期', '请返回应用重新发起登录', false))
+  }
+  const tx = takeTx(bound.txId)
+  if (!tx) {
+    return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
+  }
+
+  try {
+    const identity = await exchangeIdentity(authCode)
+    const user = await directory.findByDingtalkUserId(identity.userid)
+    if (!user) {
+      audit({ event: 'login_qr', ok: false, ip, detail: `目录中无此钉钉账号(userid=${identity.userid})` })
+      return html(res, 403, messagePage('未找到对应员工', '你的钉钉账号未同步到公司目录,请联系管理员', false))
+    }
+    if (user.status !== 'active') {
+      audit({ event: 'login_qr', ok: false, sub: user.sub, ip, detail: '账号已禁用' })
+      return html(res, 403, messagePage('账号已禁用', '该账号已离职或被停用,如属误判请联系管理员', false))
+    }
+    audit({ event: 'login_qr', ok: true, sub: user.sub, client_id: tx.client_id, ip })
+    const session = createSession(user.sub, user.name, user.dept, 'qr')
+    finishTx(tx.id)
+    issueCodeRedirect(res, tx, session)
+  } catch (err) {
+    audit({ event: 'login_qr', ok: false, ip, detail: (err as Error).message })
+    html(res, 502, messagePage('钉钉认证失败', (err as Error).message, false))
+  }
+}
+
+// ---- token ----
+
+export async function handleToken(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const ip = clientIp(req)
+  if (!rateLimit(`token:${ip}`, 60, 60_000)) {
+    return json(res, 429, { error: 'slow_down' })
+  }
+  const raw = await readBody(req)
+  const form = new URLSearchParams(raw.toString('utf-8'))
+
+  // 客户端认证:Basic 或 form
+  let clientId = form.get('client_id') ?? ''
+  let clientSecret = form.get('client_secret') ?? ''
+  const basic = req.headers.authorization
+  if (basic?.startsWith('Basic ')) {
+    const decoded = Buffer.from(basic.slice(6), 'base64').toString('utf-8')
+    const i = decoded.indexOf(':')
+    clientId = decodeURIComponent(decoded.slice(0, i))
+    clientSecret = decodeURIComponent(decoded.slice(i + 1))
+  }
+  const client = getClient(clientId)
+  if (!client || !safeEqual(client.client_secret, clientSecret)) {
+    audit({ event: 'token', ok: false, ip, detail: '客户端认证失败' })
+    return json(res, 401, { error: 'invalid_client' })
+  }
+
+  // refresh_token grant:校验并轮换,签发新 token 组
+  if (form.get('grant_type') === 'refresh_token') {
+    const old = consumeRefreshToken(form.get('refresh_token') ?? '', clientId)
+    if (!old) {
+      audit({ event: 'token_refresh', ok: false, client_id: clientId, ip, detail: 'refresh_token 无效/过期/客户端不匹配' })
+      return json(res, 400, { error: 'invalid_grant', error_description: 'refresh_token 无效或已过期' })
+    }
+    const newRefresh = issueRefreshToken(old.sub, old.name, old.dept, clientId)
+    const now = Math.floor(Date.now() / 1000)
+    const { privateKey, kid } = await getSigningKey()
+    const roles = expandRoles(client, old.dept)
+    const accessToken = await new SignJWT({ scope: 'openid profile', dept: old.dept, roles, name: old.name })
+      .setProtectedHeader({ alg: 'RS256', kid })
+      .setIssuer(config.issuer)
+      .setSubject(old.sub)
+      .setAudience(clientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 3600)
+      .sign(privateKey)
+    const idToken = await new SignJWT({ name: old.name, dept: old.dept, roles })
+      .setProtectedHeader({ alg: 'RS256', kid })
+      .setIssuer(config.issuer)
+      .setSubject(old.sub)
+      .setAudience(clientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 600)
+      .sign(privateKey)
+    audit({ event: 'token_refresh', ok: true, sub: old.sub, client_id: clientId, ip })
+    return json(res, 200, {
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: 3600,
+      id_token: idToken,
+      refresh_token: newRefresh,
+      scope: 'openid profile'
+    })
+  }
+
+  const codeRecord = consumeCode(form.get('code') ?? '')
+  if (!codeRecord) {
+    return json(res, 400, { error: 'invalid_grant', error_description: '授权码无效或已使用' })
+  }
+  if (codeRecord.client_id !== clientId || codeRecord.redirect_uri !== (form.get('redirect_uri') ?? '')) {
+    return json(res, 400, { error: 'invalid_grant', error_description: '授权码与请求不匹配' })
+  }
+
+  // PKCE 校验
+  if (codeRecord.code_challenge) {
+    const verifierValue = form.get('code_verifier') ?? ''
+    const digest = createHash('sha256').update(verifierValue).digest('base64url')
+    if (process.env.SSO_DEBUG) {
+      console.log(`[debug] pkce received=${digest} stored=${codeRecord.code_challenge} verifierLen=${verifierValue.length}`)
+    }
+    if (!safeEqual(codeRecord.code_challenge, digest)) {
+      return json(res, 400, { error: 'invalid_grant', error_description: 'PKCE 校验失败' })
+    }
+  }
+
+  const roles = expandRoles(client, codeRecord.dept)
+  const now = Math.floor(Date.now() / 1000)
+  const { privateKey, kid } = await getSigningKey()
+
+  const idToken = await new SignJWT({ name: codeRecord.name, dept: codeRecord.dept, roles, ...(codeRecord.nonce ? { nonce: codeRecord.nonce } : {}) })
+    .setProtectedHeader({ alg: 'RS256', kid })
+    .setIssuer(config.issuer)
+    .setSubject(codeRecord.sub)
+    .setAudience(clientId)
+    .setIssuedAt(now)
+    .setExpirationTime(now + 600)
+    .sign(privateKey)
+
+  const accessToken = await new SignJWT({ scope: 'openid profile', dept: codeRecord.dept, roles, name: codeRecord.name })
+    .setProtectedHeader({ alg: 'RS256', kid })
+    .setIssuer(config.issuer)
+    .setSubject(codeRecord.sub)
+    .setAudience(clientId)
+    .setIssuedAt(now)
+    .setExpirationTime(now + 3600)
+    .sign(privateKey)
+
+  const refreshToken = issueRefreshToken(codeRecord.sub, codeRecord.name, codeRecord.dept, clientId)
+  audit({ event: 'token', ok: true, sub: codeRecord.sub, client_id: clientId, ip })
+  json(res, 200, {
+    access_token: accessToken,
+    token_type: 'Bearer',
+    expires_in: 3600,
+    id_token: idToken,
+    refresh_token: refreshToken,
+    scope: 'openid profile'
+  })
+}
+
+export async function handleUserinfo(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const auth = req.headers.authorization ?? ''
+  if (process.env.SSO_DEBUG) console.log(`[debug] userinfo entered, auth=${auth ? auth.slice(0, 20) + '...' : 'EMPTY'}, method=${req.method}`)
+  if (!auth.startsWith('Bearer ')) {
+    return json(res, 401, { error: 'invalid_token' })
+  }
+  try {
+    const { payload } = await jwtVerify(auth.slice(7), getPublicKey(), { issuer: config.issuer })
+    json(res, 200, { sub: payload.sub, name: payload.name, dept: payload.dept, roles: payload.roles })
+  } catch (err) {
+    if (process.env.SSO_DEBUG) console.log('[debug] userinfo verify error:', (err as Error).message)
+    json(res, 401, { error: 'invalid_token' })
+  }
+}
+
+// ---- 登出 ----
+
+export async function handleLogout(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, url: URL): Promise<void> {
+  const cookies = parseCookies(req.headers.cookie)
+  const session = getSession(cookies['sso_sid'])
+  destroySession(cookies['sso_sid'])
+  if (session) revokeRefreshTokens(session.sub)
+  const clientId = url.searchParams.get('client_id') ?? ''
+  const postLogout = url.searchParams.get('post_logout_redirect_uri') ?? ''
+  const client = getClient(clientId)
+  let target: string | null = null
+  if (client && postLogout && (client.post_logout_redirect_uris ?? []).includes(postLogout)) {
+    target = postLogout
+  }
+  res.setHeader('Set-Cookie', clearCookie())
+  audit({ event: 'logout', ok: true, client_id: clientId || undefined })
+  if (target) return redirect(res, target)
+  html(res, 200, messagePage('已退出登录', '你已退出统一身份,可关闭本页面', true))
+}
+
+// ---- 账号设置(密码激活/修改) ----
+
+export async function handleProfile(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, error?: string, success?: string): Promise<void> {
+  const cookies = parseCookies(req.headers.cookie)
+  const session = getSession(cookies['sso_sid'])
+  if (!session) {
+    return html(res, 401, messagePage('请先登录', '设置密码前请先通过扫码或密码登录', false))
+  }
+  const needCurrent = !(session.authMode === 'qr' && Date.now() - session.createdAt < 10 * 60_000)
+  html(res, 200, profilePage({ sub: session.sub, name: session.name, dept: session.dept, needCurrent, error, success }))
+}
+
+export async function handleProfilePassword(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const cookies = parseCookies(req.headers.cookie)
+  const session = getSession(cookies['sso_sid'])
+  if (!session) {
+    return html(res, 401, messagePage('请先登录', '设置密码前请先登录', false))
+  }
+  const form = formToObject(await readBody(req))
+  const newPassword = form.new_password ?? ''
+  const confirm = form.confirm ?? ''
+  const needCurrent = !(session.authMode === 'qr' && Date.now() - session.createdAt < 10 * 60_000)
+  const current = needCurrent ? (form.current_password ?? null) : null
+
+  const back = (error: string) => handleProfile(req, res, error)
+  if (newPassword.length < 8) return back('新密码至少 8 位')
+  if (newPassword !== confirm) return back('两次输入的新密码不一致')
+
+  try {
+    const user = await directory.findByIdentifier(session.sub)
+    if (!user) throw new Error('目录中不存在该用户')
+    // 扫码 10 分钟内的会话可免当前密码(激活场景);改密必须提供当前密码
+    await verifier.setPassword(user, needCurrent ? current : null, newPassword)
+    audit({ event: 'password_set', ok: true, sub: session.sub })
+    handleProfile(req, res, undefined, '密码已保存,可用于"账号密码"登录')
+  } catch (err) {
+    audit({ event: 'password_set', ok: false, sub: session.sub, detail: (err as Error).message })
+    back((err as Error).message)
+  }
+}
+
+// ---- 工具 ----
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf-8')
+  const bb = Buffer.from(b, 'utf-8')
+  if (ab.length !== bb.length) return false
+  return timingSafeEqual(ab, bb)
+}
+
+function clearCookie(): string {
+  return 'sso_sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'
+}

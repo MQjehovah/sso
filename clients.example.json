@@ -1,0 +1,73 @@
+{
+  "clients": [
+    {
+      "client_id": "dashboard-gateway",
+      "client_secret": "change-me-gateway-secret",
+      "name": "员工 AI 工作台",
+      "redirect_uris": ["http://127.0.0.1:8090/api/auth/oidc/callback"],
+      "post_logout_redirect_uris": [],
+      "default_role": "user",
+      "dept_role_map": {
+        "平台组": "admin",
+        "AI-Admin": "admin"
+      }
+    },
+    {
+      "client_id": "agent",
+      "client_secret": "change-me-agent-secret",
+      "name": "零号员工",
+      "redirect_uris": ["http://127.0.0.1:8080/api/auth/oidc/callback"],
+      "default_role": "user",
+      "dept_role_map": {
+        "平台组": "admin"
+      }
+    },
+    {
+      "client_id": "market",
+      "client_secret": "change-me-market-secret",
+      "name": "能力市场",
+      "redirect_uris": ["http://127.0.0.1:8093/api/auth/oidc/callback"],
+      "default_role": "user",
+      "dept_role_map": {
+        "平台组": "admin"
+      }
+    },
+    {
+      "client_id": "rag",
+      "client_secret": "change-me-rag-secret",
+      "name": "企业知识库",
+      "redirect_uris": ["http://127.0.0.1:8092/api/auth/oidc/callback"],
+      "default_role": "user",
+      "dept_role_map": {
+        "平台组": "admin"
+      }
+    },
+    {
+      "client_id": "router-admin",
+      "client_secret": "change-me-router-secret",
+      "name": "算力网关控制台",
+      "redirect_uris": ["http://127.0.0.1:3001/api/auth/oidc/callback"],
+      "default_role": "user",
+      "dept_role_map": {
+        "平台组": "ADMIN"
+      }
+    },
+    {
+      "client_id": "zhongtai-oa",
+      "client_secret": "change-me-oa-secret",
+      "name": "数字中台 · OA",
+      "redirect_uris": ["http://127.0.0.1:8070/api/auth/oidc/callback"],
+      "default_role": "user"
+    },
+    {
+      "client_id": "test-web",
+      "client_secret": "test-secret",
+      "name": "烟测客户端",
+      "redirect_uris": ["http://127.0.0.1:19990/cb"],
+      "default_role": "user",
+      "dept_role_map": {
+        "平台组": "admin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "sso",
+  "version": "0.1.0",
+  "description": "自研统一认证服务(OIDC 授权码+PKCE · 钉钉扫码/LDAP 密码 · LDAP 用户目录)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.ts",
+    "dev": "node --watch --env-file-if-exists=.env src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:mock-dingtalk": "node test/mock-dingtalk.mjs",
+    "test:smoke": "node test/run-smoke.mjs"
+  },
+  "dependencies": {
+    "jose": "^6.2.11",
+    "ldapts": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "openid-client": "^6.8.7",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "clients": [
+    {
+      "client_id": "test-web",
+      "client_secret": "test-secret",
+      "name": "烟测客户端",
+      "redirect_uris": ["http://127.0.0.1:19990/cb"],
+      "default_role": "user",
+      "dept_role_map": { "平台组": "admin" }
+    },
+    {
+      "client_id": "dashboard-gateway",
+      "client_secret": "e2e-gateway-secret",
+      "name": "员工 AI 工作台(E2E)",
+      "redirect_uris": ["http://127.0.0.1:18090/api/auth/oidc/callback"],
+      "default_role": "user"
+    }
+  ]
+}
