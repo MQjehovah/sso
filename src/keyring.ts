@@ -18,6 +18,8 @@ export interface KeyMeta {
   kid: string
   createdAt: number
   status: KeyStatus
+  /** 从 active 降级为 verifying 的时间戳(ms);仅 verifying/retired 状态有值 */
+  verifyingSince?: number
 }
 
 export interface SigningKey {
@@ -119,7 +121,7 @@ export class KeyRing {
     const previous = this.activeKid()
     if (previous) {
       const meta = this.readMeta(previous)
-      if (meta) this.writeMeta({ ...meta, status: 'verifying' })
+      if (meta) this.writeMeta({ ...meta, status: 'verifying', verifyingSince: Date.now() })
     }
     const created = this.generate()
     this.setActive(created.kid)
@@ -142,7 +144,8 @@ export class KeyRing {
     const cutoff = Date.now() - retireAfterHours * 3_600_000
     const retired: string[] = []
     for (const meta of this.list()) {
-      if (meta.status === 'verifying' && meta.createdAt <= cutoff) {
+      const since = meta.verifyingSince ?? meta.createdAt
+      if (meta.status === 'verifying' && since <= cutoff) {
         this.writeMeta({ ...meta, status: 'retired' })
         retired.push(meta.kid)
       }
