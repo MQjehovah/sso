@@ -101,7 +101,7 @@ async function main() {
   setupFixtures()
 
   const mock = spawnAndWait('node', ['test/mock-dingtalk.mjs'], { MOCK_DINGTALK_PORT: String(MOCK_PORT) })
-  const sso = spawnAndWait('node', ['src/index.ts'], {
+  const sso = spawnAndWait('node', ['--experimental-strip-types', 'src/index.ts'], {
     SSO_PORT: String(SSO_PORT),
     SSO_ISSUER: SSO,
     SSO_DATA_DIR: 'test/data',
