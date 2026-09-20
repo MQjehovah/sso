@@ -112,9 +112,9 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 
 退休窗口语义:`SSO_KEY_RETIRE_AFTER_HOURS`(默认 2 小时)从密钥**停止签发**(`rotate` 写入 `verifyingSince`)的那一刻起算;`prune` 只退休 `verifying` 且已超过窗口的密钥。`key:retire <kid>` 可跳过窗口立即退休指定密钥,但不能退休 `active`。
 
-为什么轮换零中断:`/.well-known/jwks.json` 同时发布 `active` + `verifying` 公钥,客户端缓存 JWKS 约 300 秒。轮换后新 token 用新密钥签名、旧 token 仍可被旧公钥验签,客户端最迟 5 分钟收敛,期间不中断。JWKS 每次请求实时构建,保证从**独立 CLI 进程**发起的轮换立即对服务进程可见。
+为什么轮换零中断:`/.well-known/jwks.json` 同时发布 `active` + `verifying` 公钥,客户端缓存 JWKS 最长约 600 秒(rag/market/agent 自实现缓存 TTL 为 300 秒;router 控制台与 dashboard 用 jose `createRemoteJWKSet` 默认 `cacheMaxAge` 为 600 秒)。轮换后新 token 用新密钥签名、旧 token 仍可被旧公钥验签,客户端最迟约 10 分钟收敛,期间不中断。JWKS 每次请求实时构建,保证从**独立 CLI 进程**发起的轮换立即对服务进程可见。
 
-约束:退休窗口必须大于 access_token TTL 加上 300 秒 JWKS 缓存。默认值下为 `600s + 300s = 900s`,远小于默认窗口 2 小时,安全。
+约束:退休窗口必须大于 access_token TTL 加上客户端最坏 JWKS 缓存。默认值下为 `600s + 600s = 1200s`,远小于默认窗口 2 小时(7200s),安全。
 
 **紧急流程(私钥疑似泄露)**:先 `npm run key:rotate`,再**立即** `npm run key:retire -- <old-kid>`,立刻把旧公钥移出 JWKS、使基于旧私钥的历史 token 失效。
 
