@@ -1,5 +1,5 @@
 import { createPublicKey, generateKeyPairSync, randomBytes, type KeyObject } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { importPKCS8, type CryptoKey } from 'jose'
 
@@ -10,7 +10,7 @@ import { importPKCS8, type CryptoKey } from 'jose'
  * 目录布局:
  *   <dir>/active            文本,内容为当前签名 kid
  *   <dir>/<kid>.pem         PKCS8 私钥 (0600)
- *   <dir>/<kid>.meta.json   { kid, createdAt, status }
+ *   <dir>/<kid>.meta.json   { kid, createdAt, status, verifyingSince? }
  */
 export type KeyStatus = 'active' | 'verifying' | 'retired'
 
@@ -31,7 +31,6 @@ export interface SigningKey {
 export class KeyRing {
   private readonly dir: string
   private signing: SigningKey | null = null
-  private jwksCache: { keys: Record<string, unknown>[] } | null = null
 
   constructor(dir: string) {
     this.dir = dir
@@ -53,7 +52,10 @@ export class KeyRing {
   private readMeta(kid: string): KeyMeta | null {
     try {
       return JSON.parse(readFileSync(this.metaPath(kid), 'utf-8')) as KeyMeta
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn('[keyring] 读取密钥失败:', this.metaPath(kid), (err as Error).message)
+      }
       return null
     }
   }
@@ -62,7 +64,7 @@ export class KeyRing {
     writeFileSync(this.metaPath(meta.kid), JSON.stringify(meta), { mode: 0o600 })
   }
 
-  private activeKid(): string | null {
+  activeKid(): string | null {
     try {
       return readFileSync(this.activeKidPath(), 'utf-8').trim() || null
     } catch {
@@ -75,7 +77,6 @@ export class KeyRing {
     writeFileSync(tmp, kid, { mode: 0o600 })
     renameSync(tmp, this.activeKidPath())
     this.signing = null
-    this.jwksCache = null
   }
 
   private generate(): KeyMeta {
@@ -96,10 +97,9 @@ export class KeyRing {
     const kid = readFileSync(legacyKid, 'utf-8').trim()
     if (!kid) return false
     renameSync(legacyPem, this.pemPath(kid))
-    renameSync(legacyKid, this.metaPath(kid))
+    chmodSync(this.pemPath(kid), 0o600)
     this.writeMeta({ kid, createdAt: Date.now(), status: 'active' })
     this.setActive(kid)
-    this.jwksCache = null
     return true
   }
 
@@ -109,7 +109,7 @@ export class KeyRing {
     const kid = this.activeKid()
     if (kid) {
       const meta = this.readMeta(kid)
-      if (meta) return meta
+      if (meta && meta.status === 'active') return meta
     }
     const meta = this.generate()
     this.setActive(meta.kid)
@@ -125,7 +125,6 @@ export class KeyRing {
     }
     const created = this.generate()
     this.setActive(created.kid)
-    this.jwksCache = null
     return { previous, current: created.kid }
   }
 
@@ -139,7 +138,7 @@ export class KeyRing {
     return out.sort((a, b) => a.createdAt - b.createdAt)
   }
 
-  /** 把 verifying 且超过 retireAfterMs 的密钥置 retired(移出 JWKS);返回新退休的 kid */
+  /** 把 verifying 且超过 retireAfterHours 的密钥置 retired(移出 JWKS);返回新退休的 kid */
   async prune(retireAfterHours: number): Promise<string[]> {
     const cutoff = Date.now() - retireAfterHours * 3_600_000
     const retired: string[] = []
@@ -150,15 +149,13 @@ export class KeyRing {
         retired.push(meta.kid)
       }
     }
-    if (retired.length) this.jwksCache = null
     return retired
   }
 
   retire(kid: string): boolean {
     const meta = this.readMeta(kid)
-    if (!meta || meta.status === 'active') return false
+    if (!meta || meta.status === 'active' || this.activeKid() === kid) return false
     this.writeMeta({ ...meta, status: 'retired' })
-    this.jwksCache = null
     return true
   }
 
@@ -179,14 +176,16 @@ export class KeyRing {
     if (!meta || meta.status === 'retired') return null
     try {
       return createPublicKey(readFileSync(this.pemPath(kid), 'utf-8'))
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn('[keyring] 读取密钥失败:', this.pemPath(kid), (err as Error).message)
+      }
       return null
     }
   }
 
-  /** JWKS:active + verifying 的公钥 */
+  /** JWKS:active + verifying 的公钥(每次调用实时构建,保证跨进程轮换可见) */
   publicJwks(): { keys: Record<string, unknown>[] } {
-    if (this.jwksCache) return this.jwksCache
     const keys: Record<string, unknown>[] = []
     for (const meta of this.list()) {
       if (meta.status === 'retired') continue
@@ -195,7 +194,6 @@ export class KeyRing {
       const jwk = pub.export({ format: 'jwk' }) as Record<string, unknown>
       keys.push({ ...jwk, kid: meta.kid, use: 'sig', alg: 'RS256' })
     }
-    this.jwksCache = { keys }
-    return this.jwksCache
+    return { keys }
   }
 }
