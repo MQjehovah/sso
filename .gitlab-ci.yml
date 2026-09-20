@@ -1,0 +1,15 @@
+stages: [verify]
+
+default:
+  image: node:22
+  cache:
+    key:
+      files: [package-lock.json]
+    paths: [node_modules/]
+
+verify:
+  stage: verify
+  script:
+    - npm ci
+    - npm run typecheck
+    - npm test
