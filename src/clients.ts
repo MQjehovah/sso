@@ -31,7 +31,13 @@ let loadedAt = 0
  */
 export function expandSecret(raw: string): string {
   const m = /^\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(raw)
-  if (!m) return raw
+  if (!m) {
+    // 含 ${ENV: 但格式不合法的(大小写不敏感),视为配置错误(否则会被当成字面量 secret 静默生效)
+    if (/\$\{env:/i.test(raw)) {
+      throw new Error(`client_secret 占位格式非法(需形如 \${ENV:NAME}): ${raw}`)
+    }
+    return raw
+  }
   const value = process.env[m[1]]
   if (!value) throw new Error(`client_secret 引用了未设置环境变量: ${m[1]}`)
   return value
@@ -49,7 +55,11 @@ export function loadClients(): Map<string, OidcClient> {
   const file = JSON.parse(readFileSync(path, 'utf-8')) as ClientsFile
   const map = new Map<string, OidcClient>()
   for (const c of file.clients ?? []) {
-    if (c.client_secret) c.client_secret = expandSecret(c.client_secret)
+    // 空/非字符串 secret 是配置错误:会退化成 safeEqual('','') 放行,必须启动即失败
+    if (typeof c.client_secret !== 'string' || c.client_secret === '') {
+      throw new Error(`客户端 ${c.client_id} 的 client_secret 缺失或为空(参考 clients.example.json)`)
+    }
+    c.client_secret = expandSecret(c.client_secret)
     map.set(c.client_id, c)
   }
   cached = map

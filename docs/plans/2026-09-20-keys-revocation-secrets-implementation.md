@@ -870,7 +870,7 @@ export function expandSecret(raw: string): string {
   const m = /^\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(raw)
   if (!m) return raw
   const value = process.env[m[1]]
-  if (!value) throw new Error(`client_secret 引用的环境变量未设置: ${m[1]}`)
+  if (!value) throw new Error(`client_secret 引用了未设置环境变量: ${m[1]}`)
   return value
 }
 ```

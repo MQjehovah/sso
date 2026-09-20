@@ -262,7 +262,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
     clientSecret = decodeURIComponent(decoded.slice(i + 1))
   }
   const client = getClient(clientId)
-  if (!client || !safeEqual(client.client_secret, clientSecret)) {
+  if (!client || !clientSecret || !safeEqual(client.client_secret, clientSecret)) {
     audit({ event: 'token', ok: false, ip, detail: '客户端认证失败' })
     return json(res, 401, { error: 'invalid_client' })
   }
