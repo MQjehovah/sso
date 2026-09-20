@@ -80,6 +80,10 @@ export const config = {
 
   /** 密钥退休窗口:verifying 密钥超过该时长后移出 JWKS(小时) */
   keyRetireAfterHours: Number(process.env.SSO_KEY_RETIRE_AFTER_HOURS ?? 2),
+  /** access_token 寿命(秒),默认 10 分钟;缩短以限制登出后的残留有效期 */
+  accessTokenTtlSeconds: Number(process.env.SSO_ACCESS_TOKEN_TTL_SECONDS ?? 600),
+  /** id_token 寿命(秒),默认 10 分钟 */
+  idTokenTtlSeconds: Number(process.env.SSO_ID_TOKEN_TTL_SECONDS ?? 600),
 
   /** 客户端注册文件 */
   clientsPath: process.env.SSO_CLIENTS_PATH ?? './clients.json'

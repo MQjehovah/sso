@@ -284,7 +284,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
       .setSubject(old.sub)
       .setAudience(clientId)
       .setIssuedAt(now)
-      .setExpirationTime(now + 3600)
+      .setExpirationTime(now + config.accessTokenTtlSeconds)
       .sign(privateKey)
     const idToken = await new SignJWT({ name: old.name, dept: old.dept, roles, ...dingtalkClaim(old.dingtalkUserId) })
       .setProtectedHeader({ alg: 'RS256', kid })
@@ -292,13 +292,13 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
       .setSubject(old.sub)
       .setAudience(clientId)
       .setIssuedAt(now)
-      .setExpirationTime(now + 600)
+      .setExpirationTime(now + config.idTokenTtlSeconds)
       .sign(privateKey)
     audit({ event: 'token_refresh', ok: true, sub: old.sub, client_id: clientId, ip })
     return json(res, 200, {
       access_token: accessToken,
       token_type: 'Bearer',
-      expires_in: 3600,
+      expires_in: config.accessTokenTtlSeconds,
       id_token: idToken,
       refresh_token: newRefresh,
       scope: 'openid profile'
@@ -335,7 +335,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
     .setSubject(codeRecord.sub)
     .setAudience(clientId)
     .setIssuedAt(now)
-    .setExpirationTime(now + 600)
+    .setExpirationTime(now + config.idTokenTtlSeconds)
     .sign(privateKey)
 
   const accessToken = await new SignJWT({ scope: 'openid profile', dept: codeRecord.dept, roles, name: codeRecord.name, ...dingtalkClaim(codeRecord.dingtalkUserId) })
@@ -344,7 +344,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
     .setSubject(codeRecord.sub)
     .setAudience(clientId)
     .setIssuedAt(now)
-    .setExpirationTime(now + 3600)
+    .setExpirationTime(now + config.accessTokenTtlSeconds)
     .sign(privateKey)
 
   const refreshToken = issueRefreshToken(codeRecord.sub, codeRecord.name, codeRecord.dept, clientId, codeRecord.dingtalkUserId)
@@ -352,7 +352,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
   json(res, 200, {
     access_token: accessToken,
     token_type: 'Bearer',
-    expires_in: 3600,
+    expires_in: config.accessTokenTtlSeconds,
     id_token: idToken,
     refresh_token: refreshToken,
     scope: 'openid profile'
