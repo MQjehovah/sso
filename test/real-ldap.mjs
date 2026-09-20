@@ -26,7 +26,7 @@ function assert(name, cond, detail = '') {
 }
 
 function spawnSSO() {
-  const child = spawn('node', ['--env-file=.env', 'src/index.ts'], {
+  const child = spawn('node', ['--experimental-strip-types', '--env-file=.env', 'src/index.ts'], {
     cwd: new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'),
     stdio: ['ignore', 'pipe', 'pipe']
   })
