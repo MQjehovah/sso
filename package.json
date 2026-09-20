@@ -11,10 +11,10 @@
     "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
     "test:smoke": "node test/run-smoke.mjs",
     "test:mock-dingtalk": "node test/mock-dingtalk.mjs",
-    "key:rotate": "node --experimental-strip-types src/cli/keys.ts rotate",
-    "key:list": "node --experimental-strip-types src/cli/keys.ts list",
-    "key:prune": "node --experimental-strip-types src/cli/keys.ts prune",
-    "key:retire": "node --experimental-strip-types src/cli/keys.ts retire"
+    "key:rotate": "node --experimental-strip-types --env-file-if-exists=.env src/cli/keys.ts rotate",
+    "key:list": "node --experimental-strip-types --env-file-if-exists=.env src/cli/keys.ts list",
+    "key:prune": "node --experimental-strip-types --env-file-if-exists=.env src/cli/keys.ts prune",
+    "key:retire": "node --experimental-strip-types --env-file-if-exists=.env src/cli/keys.ts retire"
   },
   "dependencies": {
     "jose": "^6.2.11",
