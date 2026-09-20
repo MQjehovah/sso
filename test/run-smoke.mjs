@@ -282,6 +282,73 @@ async function main() {
     const infoNo = await oidc.fetchUserInfo(configuration, grantNo.access_token, '10004')
     assert('无钉钉号用户 userinfo 不含 dingtalk', !('dingtalk' in infoNo))
 
+    // ---- 改密吊销 refresh token ----
+    // 用 10004:其密码(pass456)在本脚本其它段落从不被修改,且后续无依赖;
+    // 10001 的密码需保持 pass123 供下方 TTL 覆盖实例登录,故不能用 10001。
+    const jarPw = new Jar()
+    const vPw = oidc.randomPKCECodeVerifier()
+    const auPw = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'spw', nonce: 'npw',
+      code_challenge: await oidc.calculatePKCECodeChallenge(vPw), code_challenge_method: 'S256'
+    })
+    const rPw1 = await ssoFetch(jarPw, auPw, { redirect: 'manual' })
+    const txPw = new URL(rPw1.headers.get('location'), SSO).searchParams.get('tx')
+    const rPwLogin = await ssoFetch(jarPw, `${SSO}/login/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${txPw}&username=10004&password=pass456`,
+      redirect: 'manual'
+    })
+    jarPw.absorb(rPwLogin)
+    const cbPw = rPwLogin.headers.get('location') ?? ''
+    const grantPw = await oidc.authorizationCodeGrant(configuration, new URL(cbPw), {
+      expectedState: 'spw', expectedNonce: 'npw', pkceCodeVerifier: vPw
+    })
+    const oldRefresh = grantPw.refresh_token
+    assert('改密前签发 refresh_token', typeof oldRefresh === 'string' && oldRefresh.length > 20)
+
+    // 密码登录(authMode=pwd)改密必须提供 current_password
+    const rChange = await ssoFetch(jarPw, `${SSO}/profile/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'current_password=pass456&new_password=newpass456&confirm=newpass456'
+    })
+    assert('改密成功', (await rChange.text()).includes('密码已保存'))
+
+    const rOld = await fetch(`${SSO}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: oldRefresh, client_id: 'test-web', client_secret: 'test-secret' })
+    })
+    const oldBody = await rOld.json()
+    assert('改密后旧 refresh_token 被吊销(400 invalid_grant)', rOld.status === 400 && oldBody.error === 'invalid_grant')
+
+    // 负向对照:改密后重新登录签发的 refresh_token 仍可用(证明只吊销了旧 token)
+    const jarPw2 = new Jar()
+    const vPw2 = oidc.randomPKCECodeVerifier()
+    const auPw2 = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'spw2', nonce: 'npw2',
+      code_challenge: await oidc.calculatePKCECodeChallenge(vPw2), code_challenge_method: 'S256'
+    })
+    const rPw2 = await ssoFetch(jarPw2, auPw2, { redirect: 'manual' })
+    const txPw2 = new URL(rPw2.headers.get('location'), SSO).searchParams.get('tx')
+    const rPw2Login = await ssoFetch(jarPw2, `${SSO}/login/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${txPw2}&username=10004&password=newpass456`,
+      redirect: 'manual'
+    })
+    const cbPw2 = rPw2Login.headers.get('location') ?? ''
+    const grantPw2 = await oidc.authorizationCodeGrant(configuration, new URL(cbPw2), {
+      expectedState: 'spw2', expectedNonce: 'npw2', pkceCodeVerifier: vPw2
+    })
+    const rNew = await fetch(`${SSO}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: grantPw2.refresh_token, client_id: 'test-web', client_secret: 'test-secret' })
+    })
+    assert('改密后新 refresh_token 仍可用', rNew.ok)
+
     // 客户端认证失败
     const badClient = await fetch(`${SSO}/token`, {
       method: 'POST',

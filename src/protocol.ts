@@ -432,6 +432,8 @@ export async function handleProfilePassword(req: import('node:http').IncomingMes
     if (!user) throw new Error('目录中不存在该用户')
     // 扫码 10 分钟内的会话可免当前密码(激活场景);改密必须提供当前密码
     await verifier.setPassword(user, needCurrent ? current : null, newPassword)
+    // 改密后立即吊销该用户全部 refresh token,使其它端最迟在本端 access TTL 内失效
+    revokeRefreshTokens(session.sub)
     audit({ event: 'password_set', ok: true, sub: session.sub })
     handleProfile(req, res, undefined, '密码已保存,可用于"账号密码"登录')
   } catch (err) {
