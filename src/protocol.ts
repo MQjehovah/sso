@@ -85,8 +85,9 @@ export async function handleDiscovery(res: import('node:http').ServerResponse): 
 }
 
 export async function handleJwks(res: import('node:http').ServerResponse): Promise<void> {
-  // 首次启动/空密钥目录时先确保存在 active 密钥,避免发布空 JWKS 被客户端缓存 300 秒
-  await keyRing().ensureActive()
+  // 仅在密钥环为空时生成(空目录首次启动的自愈,避免发布空 JWKS 被客户端缓存 300 秒);
+  // rotate 进行中旧 key 已降级但指针尚未切换时环内仍有钥匙,不会被误判为空而多生成一把
+  if (getPublicJwks().keys.length === 0) await keyRing().ensureActive()
   json(res, 200, getPublicJwks())
 }
 
