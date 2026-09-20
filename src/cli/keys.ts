@@ -21,8 +21,12 @@ async function main(): Promise<void> {
       return
     }
     case 'list': {
-      await ring.ensureActive()
-      for (const k of ring.list()) {
+      const keys = ring.list()
+      if (keys.length === 0) {
+        console.log('[keys] 无密钥')
+        return
+      }
+      for (const k of keys) {
         console.log(`${k.status.padEnd(9)} ${k.kid}  ${new Date(k.createdAt).toISOString()}`)
       }
       return
