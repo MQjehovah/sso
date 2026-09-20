@@ -14,6 +14,8 @@ export interface OidcClient {
   name?: string
   dept_role_map?: Record<string, string>
   default_role?: string
+  /** 本客户端 refresh token 有效期(小时),默认 12;由首次授权时间起算(轮换不延长) */
+  refresh_ttl_hours?: number
 }
 
 interface ClientsFile {

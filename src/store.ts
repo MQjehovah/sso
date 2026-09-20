@@ -151,10 +151,11 @@ export interface RefreshTokenRecord {
   dingtalkUserId?: string
   client_id: string
   expires_at: number
+  /** 首次授权时间(绝对会话上限的起算点,轮换不更新);老记录可能缺失 */
+  auth_time: number
 }
 
 const RT_FILE = join(config.dataDir, 'refresh_tokens.json')
-const RT_TTL = 7 * 24 * 3_600_000
 const refreshTokens = new Map<string, RefreshTokenRecord>()
 let rtLoaded = false
 
@@ -179,26 +180,34 @@ function rtPersist(): void {
   renameSync(tmp, RT_FILE)
 }
 
-/** 签发 refresh token(绑定用户与客户端,7 天有效) */
-export function issueRefreshToken(sub: string, name: string, dept: string, clientId: string, dingtalkUserId?: string): string {
+/** 签发 refresh token(绑定用户与客户端;绝对上限由首次授权时间 authTime + ttlMs 决定,轮换不延长) */
+export function issueRefreshToken(sub: string, name: string, dept: string, clientId: string, dingtalkUserId: string | undefined, ttlMs: number, authTime: number): string {
   rtLoad()
   const now = Date.now()
   for (const [t, r] of refreshTokens) if (r.expires_at <= now) refreshTokens.delete(t)
   const token = randomBytes(32).toString('hex')
-  refreshTokens.set(token, { token, sub, name, dept, dingtalkUserId: dingtalkUserId || undefined, client_id: clientId, expires_at: now + RT_TTL })
+  // 绝对上限:expires_at 始终从首次授权时间起算,轮换不延长
+  refreshTokens.set(token, {
+    token, sub, name, dept, dingtalkUserId: dingtalkUserId || undefined,
+    client_id: clientId, expires_at: authTime + ttlMs, auth_time: authTime
+  })
   rtPersist()
   return token
 }
 
-/** 校验并轮换:成功返回用户信息并废弃旧 token(调用方应签发新 refresh token) */
-export function consumeRefreshToken(token: string, clientId: string): { sub: string; name: string; dept: string; dingtalkUserId?: string } | null {
+/** 校验并轮换:成功返回用户信息与首次授权时间并废弃旧 token(调用方应签发新 refresh token) */
+export function consumeRefreshToken(token: string, clientId: string): { sub: string; name: string; dept: string; dingtalkUserId?: string; authTime: number } | null {
   rtLoad()
   const r = refreshTokens.get(token)
   if (!r) return null
   refreshTokens.delete(token)
   rtPersist()
   if (r.client_id !== clientId || r.expires_at <= Date.now()) return null
-  return { sub: r.sub, name: r.name, dept: r.dept, dingtalkUserId: r.dingtalkUserId }
+  // 老记录(本改动前写入)无 auth_time,按当前时间兜底,避免立即失效
+  return {
+    sub: r.sub, name: r.name, dept: r.dept, dingtalkUserId: r.dingtalkUserId,
+    authTime: r.auth_time ?? Date.now()
+  }
 }
 
 /** 登出时吊销该用户在某客户端下的全部 refresh token */

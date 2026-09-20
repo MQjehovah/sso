@@ -274,7 +274,9 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
       audit({ event: 'token_refresh', ok: false, client_id: clientId, ip, detail: 'refresh_token 无效/过期/客户端不匹配' })
       return json(res, 400, { error: 'invalid_grant', error_description: 'refresh_token 无效或已过期' })
     }
-    const newRefresh = issueRefreshToken(old.sub, old.name, old.dept, clientId, old.dingtalkUserId)
+    const refreshTtlMs = (client.refresh_ttl_hours ?? 12) * 3_600_000
+    // 轮换必须沿用首次授权时间,绝对会话上限不因刷新而延长
+    const newRefresh = issueRefreshToken(old.sub, old.name, old.dept, clientId, old.dingtalkUserId, refreshTtlMs, old.authTime)
     const now = Math.floor(Date.now() / 1000)
     const { privateKey, kid } = await getSigningKey()
     const roles = expandRoles(client, old.dept)
@@ -347,7 +349,9 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
     .setExpirationTime(now + config.accessTokenTtlSeconds)
     .sign(privateKey)
 
-  const refreshToken = issueRefreshToken(codeRecord.sub, codeRecord.name, codeRecord.dept, clientId, codeRecord.dingtalkUserId)
+  const refreshTtlMs = (client.refresh_ttl_hours ?? 12) * 3_600_000
+  const authTime = Date.now()
+  const refreshToken = issueRefreshToken(codeRecord.sub, codeRecord.name, codeRecord.dept, clientId, codeRecord.dingtalkUserId, refreshTtlMs, authTime)
   audit({ event: 'token', ok: true, sub: codeRecord.sub, client_id: clientId, ip })
   json(res, 200, {
     access_token: accessToken,
