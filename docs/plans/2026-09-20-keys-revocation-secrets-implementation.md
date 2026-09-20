@@ -983,9 +983,9 @@ SSO_KEY_RETIRE_AFTER_HOURS=2
 Run:
 ```bash
 git ls-files | Select-String clients
-git grep -n "xzrobot-" -- . || echo "仓库内已无泄露值"
+git grep -nE 'xzrobot[-]' -- . || echo "仓库内已无泄露值"
 ```
-Expected: 只列出 `clients.example.json` 与 `test/fixtures/clients.json`；无 `xzrobot-*`。
+Expected: 只列出 `clients.example.json` 与 `test/fixtures/clients.json`；无旧密钥前缀残留。
 
 **Step 7: 提交**
 

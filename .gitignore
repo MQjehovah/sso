@@ -3,3 +3,4 @@ data/
 keys/
 node_modules/
 *.log
+clients.json

@@ -10,7 +10,7 @@ const [, , username = 'admin', password = ''] = process.argv
 const SSO_BASE = process.env.SSO_BASE ?? `http://127.0.0.1:${Number(process.env.SSO_PORT ?? 8091)}`
 const SSO = SSO_BASE
 const CLIENT_ID = 'dashboard-gateway'
-const CLIENT_SECRET = 'xzrobot-gateway-2026'
+const CLIENT_SECRET = process.env.SSO_SECRET_DASHBOARD ?? ''
 const REDIRECT_URI = 'http://127.0.0.1:8090/api/auth/oidc/callback'
 
 let passed = 0
@@ -53,6 +53,10 @@ function cookieHeader() {
 
 async function main() {
   const local = !process.env.SSO_BASE
+  if (!CLIENT_SECRET) {
+    console.error('缺少 SSO_SECRET_DASHBOARD(请用 --env-file=.env 运行)')
+    process.exit(1)
+  }
   const child = local ? spawnSSO() : null
   try {
     if (local) assert('SSO 启动', await waitHealth())

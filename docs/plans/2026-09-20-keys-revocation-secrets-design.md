@@ -13,7 +13,7 @@
    - `handleProfilePassword` 改密后**没有**吊销 refresh token（`src/protocol.ts:428`），改密无法踢下线。
    - access_token 寿命偏长（3600s）。
    - 更关键：agent / rag / market / router 在 SSO 登录成功后会**各自签发本地会话 token 且不再与 SSO 交互**，本地会话 TTL 分别长达 7 天 / 24h / 24h / 未显式设置。因此即使 SSO 侧 token 立即失效，用户仍可凭本地会话长期使用。
-3. **密钥泄露**：`clients.json` 中的真实 `client_secret`（`xzrobot-agent-2026`、`xzrobot-gateway-2026` 等）已被提交，且 GitHub 上的 `MQjehovah/agent|market|rag|router|sso` **5 个仓库全部为 public**。这些密钥已泄露到公网，必须视作已失陷。
+3. **密钥泄露**：`clients.json` 中的真实 `client_secret`（具体值已抹除，不再记录于仓库）已被提交，且 GitHub 上的 `MQjehovah/agent|market|rag|router|sso` **5 个仓库全部为 public**。这些密钥已泄露到公网，必须视作已失陷。
 
 ## 目标
 
@@ -99,7 +99,7 @@ CLI（新增 `src/cli/keys.ts`，挂到 `package.json` scripts）：
 - `clients.json` 从仓库移除：加入 `.gitignore` 并 `git rm --cached`；保留 `clients.example.json` 作为模板（值全部为占位符）。
 - `clients.json` 的 `client_secret` 支持 **`${ENV:VAR}` 占位**（`src/clients.ts` 解析），由部署 env 注入；本地 `clients.json` 权限 0600，不入库。
 - **轮换**：为 `agent`、`market`、`rag`、`router`、`dashboard-gateway` 各生成新的 32 字节 base64url 随机 secret，同步写入各部署环境变量与 SSO 的 env；旧值全部作废。
-- **移除硬编码兜底**：dashboard `electron/main/identity.ts:98` 的默认 `xzrobot-gateway-2026`；实现前逐一核实 rag / market / router 获取 client_secret 的路径并改为纯 env 读取。
+- **移除硬编码兜底**：dashboard `electron/main/identity.ts:98` 的默认硬编码 `client_secret`；实现前逐一核实 rag / market / router 获取 client_secret 的路径并改为纯 env 读取。
 - 不做 git 历史重写（轮换后历史值已无效）。
 
 ### 4. 测试与 CI
