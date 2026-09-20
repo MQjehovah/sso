@@ -78,6 +78,9 @@ export const config = {
     }
   },
 
+  /** 密钥退休窗口:verifying 密钥超过该时长后移出 JWKS(小时) */
+  keyRetireAfterHours: Number(process.env.SSO_KEY_RETIRE_AFTER_HOURS ?? 2),
+
   /** 客户端注册文件 */
   clientsPath: process.env.SSO_CLIENTS_PATH ?? './clients.json'
 }

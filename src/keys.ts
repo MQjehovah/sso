@@ -1,56 +1,36 @@
-import { createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { importPKCS8, type CryptoKey } from 'jose'
 import { config } from './config.ts'
+import { KeyRing, type SigningKey } from './keyring.ts'
 
 /**
- * RS256 签发密钥:首次启动自动生成 RSA-2048,私钥文件 600 权限。
- * kid 随机生成并持久化;轮换 = 保留旧私钥双签发/验签期(运维手册另行覆盖 v1 简化为单密钥)。
+ * 全局密钥环单例。旧版单密钥(private.pem + kid)会在首次访问时自动迁移。
  */
-interface KeyMaterial {
-  privateKeyPem: string
-  kid: string
-}
+let ring: KeyRing | null = null
 
-let cached: { pkcs8: string; kid: string; privateKey: CryptoKey } | null = null
-
-function loadOrCreate(): KeyMaterial {
-  const dir = config.keysDir
-  const keyPath = join(dir, 'private.pem')
-  const kidPath = join(dir, 'kid')
-  mkdirSync(dir, { recursive: true })
-  if (existsSync(keyPath) && existsSync(kidPath)) {
-    return { privateKeyPem: readFileSync(keyPath, 'utf-8'), kid: readFileSync(kidPath, 'utf-8').trim() }
+export function keyRing(): KeyRing {
+  if (!ring) {
+    ring = new KeyRing(config.keysDir)
+    if (ring.migrateLegacy()) {
+      console.log('[keys] 已从单密钥布局迁移到密钥环')
+    }
   }
-  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
-  const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
-  const kid = randomBytes(8).toString('hex')
-  writeFileSync(keyPath, pem, { mode: 0o600 })
-  writeFileSync(kidPath, kid, { mode: 0o600 })
-  console.log('[keys] 已生成 RS256 签发密钥(仅首次)')
-  return { privateKeyPem: pem, kid }
+  return ring
 }
 
-export async function getSigningKey(): Promise<{ pkcs8: string; kid: string; privateKey: CryptoKey }> {
-  if (!cached) {
-    const m = loadOrCreate()
-    cached = { pkcs8: m.privateKeyPem, kid: m.kid, privateKey: await importPKCS8(m.privateKeyPem, 'RS256') }
+export async function getSigningKey(): Promise<SigningKey> {
+  return keyRing().signingKey()
+}
+
+/** JWKS:active + verifying 公钥 */
+export function getPublicJwks(): { keys: Record<string, unknown>[] } {
+  return keyRing().publicJwks()
+}
+
+/** 按 kid 取验签公钥(Object);不存在/已退休返回 null */
+export function getPublicKeyFor(kid: string | undefined) {
+  if (!kid) {
+    // 无 kid 时用 active 兜底(兼容极老的 token)
+    const active = keyRing().activeKid()
+    return active ? keyRing().publicKeyFor(active) : null
   }
-  return cached
-}
-
-/** JWKS 公钥:由私钥文件直接导出公钥成分(不经 WebCrypto,避免不可导出限制) */
-export function getPublicJwk(): Record<string, unknown> {
-  const { privateKeyPem, kid } = loadOrCreate()
-  const jwk = createPublicKey(privateKeyPem).export({ format: 'jwk' }) as Record<string, unknown>
-  return { ...jwk, kid, use: 'sig', alg: 'RS256' }
-}
-
-/** 验签用公钥(KeyObject;jwtVerify 需要公钥而非私钥) */
-let publicKeyCache: ReturnType<typeof createPublicKey> | null = null
-
-export function getPublicKey(): ReturnType<typeof createPublicKey> {
-  if (!publicKeyCache) publicKeyCache = createPublicKey(loadOrCreate().privateKeyPem)
-  return publicKeyCache
+  return keyRing().publicKeyFor(kid)
 }
