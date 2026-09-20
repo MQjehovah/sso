@@ -25,6 +25,18 @@ interface ClientsFile {
 let cached: Map<string, OidcClient> | null = null
 let loadedAt = 0
 
+/**
+ * 展开 client_secret 的 ${ENV:NAME} 占位;非占位值原样返回。
+ * 缺失的环境变量直接抛错(快速失败,避免静默变成空 secret 导致鉴权绕过)。
+ */
+export function expandSecret(raw: string): string {
+  const m = /^\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(raw)
+  if (!m) return raw
+  const value = process.env[m[1]]
+  if (!value) throw new Error(`client_secret 引用了未设置环境变量: ${m[1]}`)
+  return value
+}
+
 export function loadClients(): Map<string, OidcClient> {
   // 每 30 秒允许热更新(改配置无需重启)
   const now = Date.now()
@@ -36,7 +48,10 @@ export function loadClients(): Map<string, OidcClient> {
   }
   const file = JSON.parse(readFileSync(path, 'utf-8')) as ClientsFile
   const map = new Map<string, OidcClient>()
-  for (const c of file.clients ?? []) map.set(c.client_id, c)
+  for (const c of file.clients ?? []) {
+    if (c.client_secret) c.client_secret = expandSecret(c.client_secret)
+    map.set(c.client_id, c)
+  }
   cached = map
   loadedAt = now
   return map
