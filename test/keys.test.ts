@@ -121,3 +121,12 @@ test('ensureActive 在指针指向非 active 密钥时重新生成', async () =>
   assert.equal(repaired.status, 'active')
   assert.equal(ring.activeKid(), repaired.kid)
 })
+
+test('恶意 kid 不允许路径穿越', async () => {
+  const ring = new KeyRing(dir)
+  await ring.ensureActive()
+  assert.equal(ring.publicKeyFor('../../evil'), null)
+  assert.equal(ring.publicKeyFor('..\\..\\evil'), null)
+  assert.equal(ring.publicKeyFor('a/b'), null)
+  assert.equal(ring.retire('../../evil'), false)
+})

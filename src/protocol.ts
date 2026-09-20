@@ -1,10 +1,10 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { SignJWT, jwtVerify, decodeProtectedHeader } from 'jose'
+import { decodeProtectedHeader, jwtVerify, SignJWT } from 'jose'
 import { config } from './config.ts'
 import { getClient, expandRoles } from './clients.ts'
 import { audit } from './audit.ts'
 import { rateLimit } from './ratelimit.ts'
-import { getSigningKey, getPublicJwks, getPublicKeyFor } from './keys.ts'
+import { getSigningKey, getPublicJwks, getPublicKeyFor, keyRing } from './keys.ts'
 import {
   createSession, getSession, destroySession,
   putTx, takeTx, finishTx, issueCode, consumeCode,
@@ -85,6 +85,8 @@ export async function handleDiscovery(res: import('node:http').ServerResponse): 
 }
 
 export async function handleJwks(res: import('node:http').ServerResponse): Promise<void> {
+  // 首次启动/空密钥目录时先确保存在 active 密钥,避免发布空 JWKS 被客户端缓存 300 秒
+  await keyRing().ensureActive()
   json(res, 200, getPublicJwks())
 }
 
@@ -366,7 +368,7 @@ export async function handleUserinfo(req: import('node:http').IncomingMessage, r
     const header = decodeProtectedHeader(auth.slice(7))
     const pub = getPublicKeyFor(header.kid)
     if (!pub) return json(res, 401, { error: 'invalid_token' })
-    const { payload } = await jwtVerify(auth.slice(7), pub, { issuer: config.issuer })
+    const { payload } = await jwtVerify(auth.slice(7), pub, { issuer: config.issuer, algorithms: ['RS256'] })
     const claims: Record<string, unknown> = { sub: payload.sub, name: payload.name, dept: payload.dept, roles: payload.roles }
     if (payload.dingtalk) claims.dingtalk = payload.dingtalk
     json(res, 200, claims)

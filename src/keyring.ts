@@ -24,8 +24,14 @@ export interface KeyMeta {
 
 export interface SigningKey {
   kid: string
-  pkcs8: string
   privateKey: CryptoKey
+}
+
+/** kid 只允许十六进制/URL-safe 字符;拒绝任何可能构成路径穿越的输入 */
+const KID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+function isValidKid(kid: string): boolean {
+  return KID_PATTERN.test(kid)
 }
 
 export class KeyRing {
@@ -50,6 +56,7 @@ export class KeyRing {
   }
 
   private readMeta(kid: string): KeyMeta | null {
+    if (!isValidKid(kid)) return null
     try {
       return JSON.parse(readFileSync(this.metaPath(kid), 'utf-8')) as KeyMeta
     } catch (err) {
@@ -61,6 +68,10 @@ export class KeyRing {
   }
 
   private writeMeta(meta: KeyMeta): void {
+    if (!isValidKid(meta.kid)) {
+      console.warn('[keyring] 拒绝写入非法 kid:', meta.kid)
+      return
+    }
     writeFileSync(this.metaPath(meta.kid), JSON.stringify(meta), { mode: 0o600 })
   }
 
@@ -95,7 +106,7 @@ export class KeyRing {
     const legacyKid = join(this.dir, 'kid')
     if (this.activeKid() || !existsSync(legacyPem) || !existsSync(legacyKid)) return false
     const kid = readFileSync(legacyKid, 'utf-8').trim()
-    if (!kid) return false
+    if (!isValidKid(kid)) return false
     renameSync(legacyPem, this.pemPath(kid))
     chmodSync(this.pemPath(kid), 0o600)
     this.writeMeta({ kid, createdAt: Date.now(), status: 'active' })
@@ -153,6 +164,7 @@ export class KeyRing {
   }
 
   retire(kid: string): boolean {
+    if (!isValidKid(kid)) return false
     const meta = this.readMeta(kid)
     if (!meta || meta.status === 'active' || this.activeKid() === kid) return false
     this.writeMeta({ ...meta, status: 'retired' })
@@ -165,13 +177,14 @@ export class KeyRing {
     const kid = this.activeKid()!
     if (!this.signing || this.signing.kid !== kid) {
       const pkcs8 = readFileSync(this.pemPath(kid), 'utf-8')
-      this.signing = { kid, pkcs8, privateKey: await importPKCS8(pkcs8, 'RS256') }
+      this.signing = { kid, privateKey: await importPKCS8(pkcs8, 'RS256') }
     }
     return this.signing
   }
 
   /** 按 kid 取验签公钥;retired / 不存在返回 null */
   publicKeyFor(kid: string): KeyObject | null {
+    if (!isValidKid(kid)) return null
     const meta = this.readMeta(kid)
     if (!meta || meta.status === 'retired') return null
     try {

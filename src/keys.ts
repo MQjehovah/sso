@@ -1,3 +1,4 @@
+import type { KeyObject } from 'node:crypto'
 import { config } from './config.ts'
 import { KeyRing, type SigningKey } from './keyring.ts'
 
@@ -26,7 +27,7 @@ export function getPublicJwks(): { keys: Record<string, unknown>[] } {
 }
 
 /** 按 kid 取验签公钥(Object);不存在/已退休返回 null */
-export function getPublicKeyFor(kid: string | undefined) {
+export function getPublicKeyFor(kid: string | undefined): KeyObject | null {
   if (!kid) {
     // 无 kid 时用 active 兜底(兼容极老的 token)
     const active = keyRing().activeKid()
