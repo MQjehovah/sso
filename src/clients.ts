@@ -51,3 +51,10 @@ export function expandRoles(client: OidcClient, dept: string): string[] {
   const role = client.dept_role_map?.[dept] ?? client.default_role ?? 'user'
   return [role]
 }
+
+/** 取客户端 refresh token 有效期(小时):非法值回退默认 12,避免 NaN 导致永不过期 */
+export function refreshTtlHours(client: OidcClient): number {
+  const raw = client.refresh_ttl_hours
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return 12
+  return raw
+}

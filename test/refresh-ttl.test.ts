@@ -1,6 +1,6 @@
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -27,6 +27,12 @@ before(async () => {
   store = await import('../src/store.ts')
 })
 
+/** 从落盘文件读取指定 token 的记录,用于断言服务签发的记录自洽(expires_at = auth_time + ttl) */
+function recordFor(token: string): { auth_time?: number; expires_at: number } | undefined {
+  const arr = JSON.parse(readFileSync(join(process.env.SSO_DATA_DIR!, 'refresh_tokens.json'), 'utf-8')) as Array<{ token: string; auth_time?: number; expires_at: number }>
+  return arr.find((r) => r.token === token)
+}
+
 test('轮换不延长绝对会话上限', () => {
   const authTime = Date.now() - 11 * H
   const t1 = store.issueRefreshToken('u1', 'U', 'D', 'c1', undefined, 12 * H, authTime)
@@ -39,11 +45,30 @@ test('轮换不延长绝对会话上限', () => {
   const c2 = store.consumeRefreshToken(t2, 'c1')
   assert.ok(c2, '未超过绝对上限时应可刷新')
   assert.equal(c2.authTime, authTime)
+})
 
-  // 13 小时已超过 12 小时绝对上限:即便刚签发也应立即失效
-  const expiredAuth = Date.now() - 13 * H
-  const t3 = store.issueRefreshToken('u1', 'U', 'D', 'c2', undefined, 12 * H, expiredAuth)
-  assert.equal(store.consumeRefreshToken(t3, 'c2'), null)
+test('绝对上限内(auth_time 为 11 小时前)的一致记录仍可刷新', () => {
+  const authTime = Date.now() - 11 * H
+  const token = store.issueRefreshToken('u-cap-ok', 'U', 'D', 'c-cap-ok', undefined, 12 * H, authTime)
+  const rec = recordFor(token)
+  assert.ok(rec, '记录应已落盘')
+  assert.equal(rec.auth_time, authTime)
+  assert.equal(rec.expires_at - rec.auth_time!, 12 * H, 'expires_at 必须等于 auth_time + 12h(自洽)')
+  assert.ok(rec.expires_at > Date.now(), '该记录应在 1 小时后才过期')
+  const consumed = store.consumeRefreshToken(token, 'c-cap-ok')
+  assert.ok(consumed, '未超过绝对上限的自洽记录应可刷新')
+  assert.equal(consumed.authTime, authTime)
+})
+
+test('超过绝对上限(auth_time 为 13 小时前)的一致记录被拒', () => {
+  const authTime = Date.now() - 13 * H
+  const token = store.issueRefreshToken('u-cap-no', 'U', 'D', 'c-cap-no', undefined, 12 * H, authTime)
+  const rec = recordFor(token)
+  assert.ok(rec, '记录应已落盘')
+  assert.equal(rec.auth_time, authTime)
+  assert.equal(rec.expires_at - rec.auth_time!, 12 * H, 'expires_at 必须等于 auth_time + 12h(自洽),不得矛盾地落在未来')
+  assert.ok(rec.expires_at < Date.now(), '该记录的过期时间应已过去')
+  assert.equal(store.consumeRefreshToken(token, 'c-cap-no'), null)
 })
 
 test('每客户端 TTL 被遵守', () => {

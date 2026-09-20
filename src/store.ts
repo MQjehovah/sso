@@ -152,7 +152,7 @@ export interface RefreshTokenRecord {
   client_id: string
   expires_at: number
   /** 首次授权时间(绝对会话上限的起算点,轮换不更新);老记录可能缺失 */
-  auth_time: number
+  auth_time?: number
 }
 
 const RT_FILE = join(config.dataDir, 'refresh_tokens.json')

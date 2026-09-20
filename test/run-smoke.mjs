@@ -5,7 +5,7 @@
  *       单点登录、密码激活、登出、客户端认证失败。
  */
 import { spawn } from 'node:child_process'
-import { rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { scryptSync, randomBytes } from 'node:crypto'
 import * as oidc from 'openid-client'
 import { jwtVerify, createRemoteJWKSet, decodeJwt } from 'jose'
@@ -274,6 +274,27 @@ async function main() {
     assert('refresh grant access_token TTL 为 600 秒', rfAtTtl.exp - rfAtTtl.iat === 600)
     assert('refresh grant id_token TTL 为 600 秒', rfIdTtl.exp - rfIdTtl.iat === 600)
     assert('refresh grant expires_in 为 600', rfBody.expires_in === 600)
+
+    // ---- refresh token 绝对上限接线:expires_at 恒为 auth_time + 12h,轮换复用 auth_time ----
+    const TTL_12H = 12 * 3_600_000
+    const refreshRecordsFile = new URL('./data/refresh_tokens.json', import.meta.url)
+    const readRefreshRecords = () => JSON.parse(readFileSync(refreshRecordsFile, 'utf-8'))
+    const recsBefore = readRefreshRecords()
+    assert('refresh 记录数恰为 1(仅前面授权码换取的 refresh)', recsBefore.length === 1)
+    assert('授权码换取的 refresh 记录自洽:expires_at-auth_time 恰为 12h', recsBefore.length === 1 && recsBefore[0].expires_at - recsBefore[0].auth_time === TTL_12H)
+    const authTimeBefore = recsBefore[0]?.auth_time
+    const rfRes2 = await fetch(`${SSO}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rfBody.refresh_token, client_id: 'test-web', client_secret: 'test-secret' })
+    })
+    const rfBody2 = await rfRes2.json()
+    assert('第二次 refresh 轮换成功', rfRes2.ok && typeof rfBody2.refresh_token === 'string' && rfBody2.refresh_token !== rfBody.refresh_token)
+    const recsAfter = readRefreshRecords()
+    assert('轮换后 refresh 记录数仍为 1', recsAfter.length === 1)
+    assert('轮换沿用首次授权时间 auth_time(未被重置为当前时间)', recsAfter.length === 1 && recsAfter[0].auth_time === authTimeBefore)
+    assert('轮换后记录自洽:expires_at-auth_time 仍恰为 12h', recsAfter.length === 1 && recsAfter[0].expires_at - recsAfter[0].auth_time === TTL_12H)
+
     const rfReuse = await fetch(`${SSO}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
