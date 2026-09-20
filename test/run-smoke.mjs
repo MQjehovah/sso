@@ -8,9 +8,10 @@ import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { scryptSync, randomBytes } from 'node:crypto'
 import * as oidc from 'openid-client'
-import { jwtVerify, createRemoteJWKSet } from 'jose'
+import { jwtVerify, createRemoteJWKSet, decodeJwt } from 'jose'
 
 const SSO_PORT = 18091
+const SSO_TTL_PORT = 18092
 const MOCK_PORT = 19080
 const SSO = `http://127.0.0.1:${SSO_PORT}`
 const REDIRECT_URI = 'http://127.0.0.1:19990/cb'
@@ -94,6 +95,27 @@ async function waitHealth(url, tries = 50) {
     await new Promise((r) => setTimeout(r, 300))
   }
   return false
+}
+
+/** 走一遍密码通道(authorize → login/password → token),返回 /token 响应体;用于第二实例的 TTL 覆盖验证 */
+async function passwordCodeGrant(base, username, password) {
+  const jar = new Jar()
+  const authUrl = `${base}/authorize?client_id=test-web&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=openid&state=ttl&nonce=ttl`
+  const rAuth = await ssoFetch(jar, authUrl, { redirect: 'manual' })
+  const tx = new URL(rAuth.headers.get('location'), base).searchParams.get('tx')
+  const rLogin = await ssoFetch(jar, `${base}/login/password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `tx=${tx}&username=${username}&password=${password}`,
+    redirect: 'manual'
+  })
+  const code = new URL(rLogin.headers.get('location'), base).searchParams.get('code')
+  const res = await fetch(`${base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: REDIRECT_URI, client_id: 'test-web', client_secret: 'test-secret' })
+  })
+  return res.json()
 }
 
 // ---- 主流程 ----
@@ -192,6 +214,13 @@ async function main() {
     const { payload: atClaims1 } = await jwtVerify(grant1.access_token, JWKS, { issuer: SSO, audience: 'test-web' })
     assert('access_token 携带 dingtalk claim', atClaims1.dingtalk === '10001')
 
+    // ---- TTL 断言:默认 access/id token 均为 600 秒,且与响应体 expires_in 一致 ----
+    const atTtl1 = decodeJwt(grant1.access_token)
+    const idTtl1 = decodeJwt(grant1.id_token)
+    assert('access_token TTL 为 600 秒', atTtl1.exp - atTtl1.iat === 600)
+    assert('id_token TTL 为 600 秒', idTtl1.exp - idTtl1.iat === 600)
+    assert('授权码响应 expires_in 为 600', grant1.expires_in === 600)
+
     // ---- refresh token 流程 ----
     assert('授权码响应发放 refresh_token', typeof grant1.refresh_token === 'string' && grant1.refresh_token.length > 20)
     const rfRes = await fetch(`${SSO}/token`, {
@@ -207,6 +236,11 @@ async function main() {
     const rfClaims = await jv2(rfBody.access_token, JW2, { issuer: SSO, audience: 'test-web' })
     assert('刷新后的 access_token 验签有效', rfClaims.payload.sub === '10001')
     assert('刷新后的 access_token 携带 dingtalk claim', rfClaims.payload.dingtalk === '10001')
+    const rfAtTtl = decodeJwt(rfBody.access_token)
+    const rfIdTtl = decodeJwt(rfBody.id_token)
+    assert('refresh grant access_token TTL 为 600 秒', rfAtTtl.exp - rfAtTtl.iat === 600)
+    assert('refresh grant id_token TTL 为 600 秒', rfIdTtl.exp - rfIdTtl.iat === 600)
+    assert('refresh grant expires_in 为 600', rfBody.expires_in === 600)
     const rfReuse = await fetch(`${SSO}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -377,6 +411,36 @@ async function main() {
     await ssoFetch(jar1, `${SSO}/logout`)
     const rAfterLogout = await ssoFetch(jar1, authUrl1, { redirect: 'manual' })
     assert('登出后 authorize 需重新登录', (rAfterLogout.headers.get('location') ?? '').startsWith('/login'))
+
+    // ---- TTL 可配置覆盖:第二实例(access 60s / id 120s)证明环境变量真正生效 ----
+    const sso2Base = `http://127.0.0.1:${SSO_TTL_PORT}`
+    const ttlDataDir = new URL('./data-ttl', import.meta.url)
+    const ttlKeysDir = new URL('./keys-ttl', import.meta.url)
+    rmSync(ttlDataDir, { recursive: true, force: true })
+    rmSync(ttlKeysDir, { recursive: true, force: true })
+    const sso2 = spawnAndWait('node', ['--experimental-strip-types', 'src/index.ts'], {
+      SSO_PORT: String(SSO_TTL_PORT),
+      SSO_ISSUER: sso2Base,
+      SSO_DATA_DIR: 'test/data-ttl',
+      SSO_KEYS_DIR: 'test/keys-ttl',
+      SSO_CLIENTS_PATH: 'test/fixtures/clients.json',
+      FILE_USERS_PATH: 'test/data/users.json',
+      SSO_ACCESS_TOKEN_TTL_SECONDS: '60',
+      SSO_ID_TOKEN_TTL_SECONDS: '120'
+    })
+    try {
+      assert('TTL 覆盖实例健康检查', await waitHealth(`${sso2Base}/healthz`))
+      const ttlBody = await passwordCodeGrant(sso2Base, '10001', 'pass123')
+      const ttlAt = decodeJwt(ttlBody.access_token)
+      const ttlId = decodeJwt(ttlBody.id_token)
+      assert('SSO_ACCESS_TOKEN_TTL_SECONDS=60 生效', ttlAt.exp - ttlAt.iat === 60)
+      assert('SSO_ID_TOKEN_TTL_SECONDS=120 生效', ttlId.exp - ttlId.iat === 120)
+      assert('TTL 覆盖实例 expires_in 为 60', ttlBody.expires_in === 60)
+    } finally {
+      sso2.kill()
+      rmSync(ttlDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      rmSync(ttlKeysDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
 
     console.log(`\n结果:${passed} 通过,${failed} 失败`)
     if (failed > 0) process.exit(1)
