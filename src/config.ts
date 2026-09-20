@@ -9,6 +9,17 @@ function trimSlash(u: string): string {
   return u.replace(/\/+$/, '')
 }
 
+/** 读取正整数环境变量:未设置/空串返回默认值,非法值快速失败(避免 0 或 NaN 静默产生不可用 token) */
+function posIntEnv(name: string, def: number, min = 1): number {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return def
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < min) {
+    throw new Error(`环境变量 ${name} 必须是 >= ${min} 的数字,当前为 ${JSON.stringify(raw)}`)
+  }
+  return n
+}
+
 export const config = {
   port: Number(process.env.SSO_PORT ?? 8091),
   /** 签发者标识与对外地址(生产如 https://sso.company.internal) */
@@ -79,11 +90,11 @@ export const config = {
   },
 
   /** 密钥退休窗口:verifying 密钥超过该时长后移出 JWKS(小时) */
-  keyRetireAfterHours: Number(process.env.SSO_KEY_RETIRE_AFTER_HOURS ?? 2),
+  keyRetireAfterHours: posIntEnv('SSO_KEY_RETIRE_AFTER_HOURS', 2, 0),
   /** access_token 寿命(秒),默认 10 分钟;缩短以限制登出后的残留有效期 */
-  accessTokenTtlSeconds: Number(process.env.SSO_ACCESS_TOKEN_TTL_SECONDS ?? 600),
+  accessTokenTtlSeconds: posIntEnv('SSO_ACCESS_TOKEN_TTL_SECONDS', 600),
   /** id_token 寿命(秒),默认 10 分钟 */
-  idTokenTtlSeconds: Number(process.env.SSO_ID_TOKEN_TTL_SECONDS ?? 600),
+  idTokenTtlSeconds: posIntEnv('SSO_ID_TOKEN_TTL_SECONDS', 600),
 
   /** 客户端注册文件 */
   clientsPath: process.env.SSO_CLIENTS_PATH ?? './clients.json'
