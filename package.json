@@ -8,8 +8,8 @@
     "start": "node --experimental-strip-types --env-file-if-exists=.env src/index.ts",
     "dev": "node --experimental-strip-types --watch --env-file-if-exists=.env src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
-    "test:smoke": "node --experimental-strip-types test/run-smoke.mjs",
+    "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
+    "test:smoke": "node test/run-smoke.mjs",
     "test:mock-dingtalk": "node test/mock-dingtalk.mjs"
   },
   "dependencies": {
