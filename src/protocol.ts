@@ -6,7 +6,7 @@ import { audit } from './audit.ts'
 import { rateLimit } from './ratelimit.ts'
 import { getSigningKey, getPublicJwks, getPublicKeyFor, keyRing } from './keys.ts'
 import {
-  createSession, getSession, destroySession,
+  createSession, getSession, destroySession, destroySessionsForSub,
   putTx, takeTx, finishTx, issueCode, consumeCode,
   issueRefreshToken, consumeRefreshToken, revokeRefreshTokens,
   type PendingTx, type SsoSession
@@ -432,8 +432,10 @@ export async function handleProfilePassword(req: import('node:http').IncomingMes
     if (!user) throw new Error('目录中不存在该用户')
     // 扫码 10 分钟内的会话可免当前密码(激活场景);改密必须提供当前密码
     await verifier.setPassword(user, needCurrent ? current : null, newPassword)
-    // 改密后立即吊销该用户全部 refresh token,使其它端最迟在本端 access TTL 内失效
+    // 改密后立即吊销该用户全部 refresh token 与其它端的 SSO 会话(保留当前会话),
+    // 其它端最迟在本端 access token TTL(默认 10 分钟)内失效;当前端不受影响
     revokeRefreshTokens(session.sub)
+    destroySessionsForSub(session.sub, session.sid)
     audit({ event: 'password_set', ok: true, sub: session.sub })
     handleProfile(req, res, undefined, '密码已保存,可用于"账号密码"登录')
   } catch (err) {

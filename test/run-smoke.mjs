@@ -118,6 +118,39 @@ async function passwordCodeGrant(base, username, password) {
   return res.json()
 }
 
+/** 完整密码登录:返回独立 Jar、其 sso_sid 与授权码换取的 token 组 */
+async function passwordLogin(configuration, username, password, state) {
+  const jar = new Jar()
+  const verifier = oidc.randomPKCECodeVerifier()
+  const authUrl = oidc.buildAuthorizationUrl(configuration, {
+    redirect_uri: REDIRECT_URI, scope: 'openid', state, nonce: state,
+    code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256'
+  })
+  const rAuth = await ssoFetch(jar, authUrl, { redirect: 'manual' })
+  const tx = new URL(rAuth.headers.get('location'), SSO).searchParams.get('tx')
+  const rLogin = await ssoFetch(jar, `${SSO}/login/password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `tx=${tx}&username=${username}&password=${password}`,
+    redirect: 'manual'
+  })
+  jar.absorb(rLogin)
+  const cb = rLogin.headers.get('location') ?? ''
+  const grant = await oidc.authorizationCodeGrant(configuration, new URL(cb), {
+    expectedState: state, expectedNonce: state, pkceCodeVerifier: verifier
+  })
+  return { jar, sid: jar.cookies.get('sso_sid') ?? '', grant }
+}
+
+/** 用给定 sso_sid 走 /authorize,返回状态码与 Location */
+async function authorizeWithSid(configuration, sid, state) {
+  const authUrl = oidc.buildAuthorizationUrl(configuration, {
+    redirect_uri: REDIRECT_URI, scope: 'openid', state, nonce: state
+  })
+  const res = await fetch(authUrl, { headers: { Cookie: `sso_sid=${sid}` }, redirect: 'manual' })
+  return { status: res.status, location: res.headers.get('location') ?? '' }
+}
+
 // ---- 主流程 ----
 async function main() {
   setupFixtures()
@@ -282,38 +315,38 @@ async function main() {
     const infoNo = await oidc.fetchUserInfo(configuration, grantNo.access_token, '10004')
     assert('无钉钉号用户 userinfo 不含 dingtalk', !('dingtalk' in infoNo))
 
-    // ---- 改密吊销 refresh token ----
+    // ---- 改密吊销 refresh token 与其它端 SSO 会话 ----
     // 用 10004:其密码(pass456)在本脚本其它段落从不被修改,且后续无依赖;
-    // 10001 的密码需保持 pass123 供下方 TTL 覆盖实例登录,故不能用 10001。
-    const jarPw = new Jar()
-    const vPw = oidc.randomPKCECodeVerifier()
-    const auPw = oidc.buildAuthorizationUrl(configuration, {
-      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'spw', nonce: 'npw',
-      code_challenge: await oidc.calculatePKCECodeChallenge(vPw), code_challenge_method: 'S256'
-    })
-    const rPw1 = await ssoFetch(jarPw, auPw, { redirect: 'manual' })
-    const txPw = new URL(rPw1.headers.get('location'), SSO).searchParams.get('tx')
-    const rPwLogin = await ssoFetch(jarPw, `${SSO}/login/password`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `tx=${txPw}&username=10004&password=pass456`,
-      redirect: 'manual'
-    })
-    jarPw.absorb(rPwLogin)
-    const cbPw = rPwLogin.headers.get('location') ?? ''
-    const grantPw = await oidc.authorizationCodeGrant(configuration, new URL(cbPw), {
-      expectedState: 'spw', expectedNonce: 'npw', pkceCodeVerifier: vPw
-    })
-    const oldRefresh = grantPw.refresh_token
+    // 10001 的密码需保持 pass123 供下方 TTL 覆盖实例登录,故不能用 10001(仅作只读对照)。
+    // 改密前建立两个独立的 10004 密码会话(各自 sso_sid),分别充当"旧端"与"当前端"。
+    const sessOld = await passwordLogin(configuration, '10004', 'pass456', 'spw-old')
+    const sessCur = await passwordLogin(configuration, '10004', 'pass456', 'spw-cur')
+    const jarOld = sessOld.jar
+    const jarCur = sessCur.jar
+    const sso_sid_old = sessOld.sid
+    const sso_sid_cur = sessCur.sid
+    const oldRefresh = sessOld.grant.refresh_token
     assert('改密前签发 refresh_token', typeof oldRefresh === 'string' && oldRefresh.length > 20)
+    assert('改密前两个 10004 会话各有独立 sso_sid', !!sso_sid_old && !!sso_sid_cur && sso_sid_old !== sso_sid_cur)
 
-    // 密码登录(authMode=pwd)改密必须提供 current_password
-    const rChange = await ssoFetch(jarPw, `${SSO}/profile/password`, {
+    // 跨用户对照:10001 的独立会话(其密码在本脚本内不被修改,仅供下方 TTL 实例登录复用)
+    const sessCtrl = await passwordLogin(configuration, '10001', 'pass123', 'spw-ctrl')
+    const ctrlRefresh = sessCtrl.grant.refresh_token
+    assert('跨用户对照会话签发 refresh_token', typeof ctrlRefresh === 'string' && ctrlRefresh.length > 20)
+
+    // 密码登录(authMode=pwd)改密必须提供 current_password;用 jarCur 使 session.sid = sso_sid_cur
+    const rChange = await ssoFetch(jarCur, `${SSO}/profile/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'current_password=pass456&new_password=newpass456&confirm=newpass456'
     })
     assert('改密成功', (await rChange.text()).includes('密码已保存'))
+
+    // 改密后:旧端 SSO 会话已吊销(authorize 不再直接发 code),当前端会话保留
+    const authOld = await authorizeWithSid(configuration, sso_sid_old, 'spw-check-old')
+    assert('改密后旧端 sso_sid 被吊销(authorize 不发 code)', authOld.status === 302 && !authOld.location.includes('code=') && authOld.location.startsWith('/login'))
+    const authCur = await authorizeWithSid(configuration, sso_sid_cur, 'spw-check-cur')
+    assert('改密后当前端 sso_sid 仍有效(authorize 发 code)', authCur.status === 302 && authCur.location.startsWith(REDIRECT_URI) && authCur.location.includes('code='))
 
     const rOld = await fetch(`${SSO}/token`, {
       method: 'POST',
@@ -322,6 +355,15 @@ async function main() {
     })
     const oldBody = await rOld.json()
     assert('改密后旧 refresh_token 被吊销(400 invalid_grant)', rOld.status === 400 && oldBody.error === 'invalid_grant')
+
+    // 跨用户隔离:10004 改密不影响 10001 的 refresh_token
+    const rCtrl = await fetch(`${SSO}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: ctrlRefresh, client_id: 'test-web', client_secret: 'test-secret' })
+    })
+    const ctrlBody = await rCtrl.json()
+    assert('跨用户隔离:10004 改密不影响 10001 的 refresh_token(200)', rCtrl.status === 200 && !!ctrlBody.access_token)
 
     // 负向对照:改密后重新登录签发的 refresh_token 仍可用(证明只吊销了旧 token)
     const jarPw2 = new Jar()

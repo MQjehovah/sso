@@ -95,6 +95,20 @@ export function destroySession(sid: string | undefined): void {
   if (sid && sessions.delete(sid)) persist()
 }
 
+/** 吊销指定用户的全部会话(可保留当前会话),返回吊销数量;用于改密后踢下线其它端 */
+export function destroySessionsForSub(sub: string, exceptSid?: string): number {
+  ensureLoaded()
+  let n = 0
+  for (const [sid, s] of sessions) {
+    if (s.sub === sub && sid !== exceptSid) {
+      sessions.delete(sid)
+      n++
+    }
+  }
+  if (n) persist()
+  return n
+}
+
 // ---- 授权码(一次性,仅内存) ----
 
 export interface PendingTx {
