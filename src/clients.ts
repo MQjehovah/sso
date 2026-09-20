@@ -39,8 +39,8 @@ export function expandSecret(raw: string): string {
     return raw
   }
   const value = process.env[m[1]]
-  if (!value) throw new Error(`client_secret 引用了未设置环境变量: ${m[1]}`)
-  return value
+  if (!value || value.trim() === '') throw new Error(`client_secret 引用了未设置环境变量: ${m[1]}`)
+  return value.trim()
 }
 
 export function loadClients(): Map<string, OidcClient> {
