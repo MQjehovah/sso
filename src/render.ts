@@ -44,8 +44,7 @@ export function loginPage(opts: {
   <div class="sub">${clientName ? escapeHtml(clientName) + ' · ' : ''}使用公司统一账号继续</div>
   <div class="tabs">
     ${dingtalkEnabled ? `<a href="/login?tx=${txId}&tab=qr" class="${tab === 'qr' ? 'on' : ''}">钉钉扫码</a>` : ''}
-    <a href="/login?tx=${txId}&tab=pwd" class="${tab === 'pwd' || !dingtalkEnabled ? 'on' : ''}">钉钉扫码</a>
-    <a href="/login?tx=${txId}&tab=pwd" class="${tab === 'pwd' ? 'on' : ''}">账号密码</a>
+    <a href="/login?tx=${txId}&tab=pwd" class="${tab === 'pwd' || !dingtalkEnabled ? 'on' : ''}">账号密码</a>
   </div>
   ${tab === 'qr' && dingtalkEnabled
     ? `<a class="btn primary" href="/dingtalk/start?tx=${txId}">打开钉钉扫码</a>`
@@ -57,6 +56,28 @@ export function loginPage(opts: {
         <label></label><button class="btn primary" type="submit">登 录</button>
       </form>`}
   <div class="hint">登录即代表同意公司信息安全规范 · 凭据仅用于身份验证</div>
+</div>
+</body></html>`
+}
+
+/** 根路径首页:直接访问 sso 域名时不再显示裸 404 */
+export function homePage(opts: { signedIn: boolean; name?: string; sub?: string }): string {
+  const { signedIn, name, sub } = opts
+  const body = signedIn
+    ? `<div class="sub">已登录:${escapeHtml(name ?? '')}${sub ? '（' + escapeHtml(sub) + '）' : ''}</div>
+       <a class="btn primary" href="/profile">账号设置(修改登录密码)</a>`
+    : `<div class="sub">请从业务系统进入并点击登录</div>
+       <div class="hint" style="margin:0 0 14px">
+         本服务为公司统一身份认证入口,用于「零号员工」平台各业务系统登录。<br />
+         直接打开本页面不需要操作,请回到业务系统(如 ai.xzrobot.com)发起登录。
+       </div>`
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>统一身份认证</title>
+<style>${BASE_STYLE}</style></head><body>
+<div class="card">
+  <div class="logo">Z</div>
+  <h1>统一身份认证服务</h1>
+  ${body}
+  <div class="hint">仅限公司内部系统使用</div>
 </div>
 </body></html>`
 }

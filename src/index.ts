@@ -3,6 +3,7 @@ import { config } from './config.ts'
 import { loadClients } from './clients.ts'
 import {
   handleAuthorize, handleDiscovery, handleDingtalkCallback, handleDingtalkStart,
+  handleHome,
   handleJwks, handleLoginPage, handleLogout, handlePasswordLogin,
   handleProfile, handleProfilePassword, handleToken, handleUserinfo
 } from './protocol.ts'
@@ -23,6 +24,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const path = url.pathname
 
   if (path === '/healthz') return json(res, 200, { status: 'ok' })
+
+  if (path === '/') return handleHome(req, res)
 
   if (path === '/.well-known/openid-configuration') return handleDiscovery(res)
   if (path === '/.well-known/jwks.json') return handleJwks(res)

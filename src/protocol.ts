@@ -15,7 +15,7 @@ import { createDirectory } from './directory.ts'
 import { createPasswordVerifier } from './password.ts'
 import { buildScanUrl, newDingtalkState, exchangeIdentity } from './dingtalk.ts'
 import { config as cfgAll } from './config.ts'
-import { loginPage, messagePage, profilePage } from './render.ts'
+import { homePage, loginPage, messagePage, profilePage } from './render.ts'
 import { issueCsrf, verifyCsrf } from './csrf.ts'
 
 const directory = createDirectory()
@@ -145,6 +145,19 @@ function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingT
     `sso_sid=${session.sid}; ${sessionCookieAttrs()}; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}`
   ])
   redirect(res, `${tx.redirect_uri}${tx.redirect_uri.includes('?') ? '&' : '?'}${params.toString()}`)
+}
+
+// ---- 首页 ----
+
+/** GET /:直接访问 sso 域名时的落地页(避免裸 404);有会话则给账号设置入口 */
+export async function handleHome(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const cookies = parseCookies(req.headers.cookie)
+  const session = getSession(cookies['sso_sid'])
+  html(res, 200, homePage({
+    signedIn: !!session,
+    name: session?.name,
+    sub: session?.sub
+  }))
 }
 
 // ---- 登录页与双通道 ----
