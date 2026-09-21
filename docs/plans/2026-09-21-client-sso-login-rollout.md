@@ -168,6 +168,56 @@ dashboard 桌面端沿用统一认证；SSO 侧只需为每个系统登记公网
 
 ## 八、回滚
 
+> 附加:`dashboard` 的本地配置与「rag 问答故障」的处置记录见第九节。
+
+## 九、故障处置记录（2026-09-21 晚）
+
+### 9.1 dashboard 报「未配置 OIDC_CLIENT_SECRET」
+
+`%APPDATA%\dashboard\config.json`（Windows 上 `dashboard`/`Dashboard` 是同一目录）
+缺 OIDC 三项，且 `agentUrl` 指向 `http://127.0.0.1:8080`（本机并无 agent）。已补：
+
+```json
+"agentUrl": "http://192.168.31.34:8090",
+"agentServiceToken": "<agent 的 AGENT_SERVICE_TOKEN>",
+"oidcIssuer": "https://auth.xzrobot.com",
+"oidcClientId": "dashboard-gateway",
+"oidcClientSecret": "<SSO_SECRET_DASHBOARD_GATEWAY>"
+```
+
+改配置后**必须重启 dashboard**（主进程启动时读一次）。同一台机器上实测其依赖链
+（discovery/jwks/agent/服务令牌/token 端点）均通。
+
+### 9.2 rag 问答"报错/答不出"的真实原因（两处独立缺陷）
+
+**症状:** 提问后答「抱歉，我无法回答」，后端日志刷满
+`InFailedSqlTransaction`，且 `sources` 为空。
+
+**根因链:**
+1. rag 的 `EmbeddingService` 发给网关的请求**没有 Authorization 头** →
+   网关 `401` → 查询向量为空 `[]`；
+2. 空向量被拿去执行 `CAST('[]' AS vector)` → `DataException: vector must have at least 1 dimension`，
+   **这条失败把 SQLAlchemy 事务置为 aborted**；
+3. 同一 session 里后续的 pgvector/BM25/实体扩展/统计查询**全部**报
+   `InFailedSqlTransaction` → 检索彻底为空 → 模型只能答"无法回答"。
+4. 另有一处配置缺口:网关的 `ApiKeyAllowedModel` 里**没有任何 key 被授权**
+   `bge-large-zh-v1.5`，即便补上鉴权头也会 403。
+
+**修复（rag 仓库 + 网关配置）:**
+- `app/core/rag.py`:`EmbeddingService` 增加 `_headers`（带 `Bearer {LLM_API_KEY}`，
+  空 key 时不加头以兼容本地 Ollama）并用于 encode/encode_batch 全部调用；
+- `app/core/rag.py`:`_search_sync` 对**空向量直接短路**返回，且 pgvector 失败后
+  **显式 `rollback()`**，避免污染事务拖垮 BM25 等其它检索路径（这层容错让
+  embedding 挂掉时仍能用 BM25 兜底出结果）；
+- 网关侧通过管理端 API（`PUT /api/keys/16`，key=`svc-rag`）授权
+  `bge-large-zh-v1.5`，保留原有 `deepseek-flash`（走 API 有校验与审计）；
+- 新增 4 个回归测试（Bearer 头、空 key 不加头、空向量短路）。
+
+**验证:** 容器内直测 embedding 返回 1024 维向量；经公网提问回答变为
+「根据参考资料，我找到了一些…」并**带回 sources**，后端错误计数 0。
+
+## 十、回滚
+
 - **agent**：`/home/xzrobot/agent/src/web/server.py.bak-svcperm-<ts>`（服务令牌改动）；
   SSO 配置在 `.env` 与 `build.sh`（`--add-host` 行），删掉即回到「仅本地登录」。
 - **rag**：`/home/xzrobot/rag/.bak-ssologin-<ts>/`（6 个源文件 + `.env` + compose 全套）；
