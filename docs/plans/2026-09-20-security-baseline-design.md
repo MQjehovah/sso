@@ -107,3 +107,55 @@ require_secret(name, value, weak_values):
 - **弱值清单是硬编码的**：若某部署用了清单外的新弱值不会被拦截；清单应随发现持续补充。
 - **sso CSRF**：会增加一次服务端校验；若客户端缓存了旧登录页会导致 400，需在提示中引导刷新。
 - **agent 口令改为随机生成**：开发环境首次启动后需从日志读取一次性口令，文档需说明。
+
+## 实施结果（2026-09-20）
+
+各仓库提交：
+
+| 仓库 | 提交 |
+|---|---|
+| sso | `76ff004`（Secure+CSRF）、`c71b5a6`（本文档与计划） |
+| rag | `abdc446`、`992dec4`（守卫/CORS/env 模板/compose） |
+| router | `e0b0eea`、`c4917f8`、`3ef4fd0` |
+| agent | `89aa067`、`f62e4fb` |
+| market | `d256672`、`e60472f` |
+| dashboard | `ac07233` |
+
+### 验收核对
+
+| 标准 | 结果 | 证据 |
+|---|---|---|
+| 1. production 弱值/缺失 → 启动失败并指出变量名 | ✅ | rag：`APP_ENV=production py -3.12 -c "import app.config"` 抛 `RuntimeError: 环境变量 JWT_SECRET_KEY ...`；router：admin 入口抛 `环境变量 JWT_SECRET ...`；agent/market 同；dashboard `OIDC_ISSUER` 缺失抛中文错误 |
+| 2. development 可启动但告警 | ✅ | 各仓库均输出 `WARNING: <VAR> 使用默认/弱值;生产环境将拒绝启动` |
+| 3. 不再有「通配 CORS + credentials」 | ✅ | `git grep` 已无 `origin: true`（仅存于 router 的历史设计文档）与 `allow_origins=["*"]`；rag CORS 改白名单，credentials 仅在白名单下开启 |
+| 4. agent 的 mcp 配置不再含真实凭证 | ✅ | `git grep` 对 `SMTP_PASSWORD`/`DEVICE_API_PASSWORD` 仅剩 `${...}` 占位；另清理出并移出多个此前未记录的硬编码凭证（`titan@810`、`E2CO2Xnv6ga9`、`xzyz2022!` 等） |
+| 5. sso 登录/改密缺 CSRF → 400；带合法 token 正常 | ✅ | 烟测 61/61；反向验证（令 `verifyCsrf` 恒真）后该断言失败 |
+| 6. 各仓库既有测试全绿 | ✅ | rag 106、dashboard 179、agent 33 failed/328 passed（与 HEAD 基线逐项一致，0 新增失败）、market 6 failed/122 passed（与基线一致）、router admin 25 + gateway 61、sso 单测 36 + 烟测 61/0 |
+| 7. `git grep` 不再命中弱值真实取值 | ⚠️ 部分 | 见下「豁免」 |
+
+### 第 7 条的豁免说明（重要）
+
+弱值字符串仍会出现在两类**受控**位置，这是刻意保留的：
+
+1. **守卫模块的弱值清单本身**（`env_guard.py` / `env.ts`）——它就是用来识别这些值的。
+2. **受守卫的开发默认值**：如 rag `config.py` 的 `minio_secret_key="xzyz2022!"`、`jwt_secret_key="change-me-in-production"`，market `seed_admin_password="admin123"`。
+   保留它们是为了让"生产忘记配置"能被守卫**明确捕获**（若默认改成空串，语义相同但错误信息更含糊；若改成清单外的值，守卫会漏掉）。这些默认在 `APP_ENV=production` 下必然导致启动失败，已在各仓库验证。
+
+其余命中均为文档、测试夹具或 `docker-compose` 的 `:?required` 提示文本。
+
+### 本阶段额外发现并已修复
+
+- **router `.env.example` 占位符不在弱值清单里**（`your_jwt_secret_key_here` 等 10 个），照抄模板即可通过生产守卫 → 模板占位符统一改为 `change-me`，并加了解析模板的断言测试。
+- **rag / market 的 docker-compose 绕过基线**：原本注入 `${JWT_SECRET_KEY:-change-me-in-production}` 且不设 `APP_ENV`，使生产部署实际运行在 development 只告警 → 改为 `APP_ENV=${APP_ENV:-production}` + 密钥 `:?required`。
+- **market `deploy.py` 会生成弱密钥写进 `.env`** → 改为 `openssl rand -hex 32` 生成，且仅在缺失/弱值时生成，不覆盖已有强值。
+- **market 登录页公开显示默认账号口令** → 移除。
+- 上一阶段 docker-compose 的 `IMAGE_SIGN_SECRET=change-me` 会让弱值压过 JWT 回退 → 改为留空以走强回退。
+
+### 遗留（未在本阶段处理，建议后续）
+
+- market 的 `publisher123` / `user123456` 仍是硬编码种子口令，且文档公开；与 admin 同属「已知默认口令」类，但需要新增配置字段并会破坏本地引导与测试夹具，故单列后续。
+- market compose 的 `SSO_CLIENT_SECRET=${SSO_CLIENT_SECRET:-xzrobot-market-2026}` 是硬编码兜底（值为上一阶段已轮换的公网泄露口令）；改为 `:?required` 会影响非 SSO 部署，需先确认部署形态。
+- rag `image_sign.py` 中 `image_sign_secret` 若被设为纯空白字符串（`" "`）仍会绕过 JWT 回退；应在取值处 `.strip()`。
+- agent 其余 tracked 配置（`mcp_server` 代码内 `xxx` 占位、`DINGTALK_APP_KEY` 等应用标识）按「非敏感」保留，如需一律外置可另开任务。
+- CI 目前不会以 `APP_ENV=production` 跑一次导入检查，弱值可能在开发路径回流；建议加入 CI。
+- `backend/.env.example` 里的 `MINIO_SECRET_KEY=minioadmin`（market）等模板占位符仍未纳入弱值清单。
