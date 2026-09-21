@@ -47,7 +47,7 @@ export const config = {
         /** 用户条目容器(搜索 base) */
         peopleBase: string
         /** 密码 bind 的用户 DN 模板;默认用搜索返回的条目 DN(适配任意布局) */
-        attrs: { sub: string; name: string; dept: string; mobile: string; dingtalk: string; status: string }
+          attrs: { sub: string; name: string; dept: string; mobile: string; mail: string; dingtalk: string; status: string }
         /** status 属性中出现该子串即视为禁用(如 sambaAcctFlags 的 'D') */
         statusDisabledFlag: string
       }
@@ -63,7 +63,8 @@ export const config = {
         sub: process.env.LDAP_ATTR_SUB ?? 'employeeNumber',
         name: process.env.LDAP_ATTR_NAME ?? 'cn',
         dept: process.env.LDAP_ATTR_DEPT ?? 'departmentNumber',
-        mobile: process.env.LDAP_ATTR_MOBILE ?? 'mobile',
+          mobile: process.env.LDAP_ATTR_MOBILE ?? 'mobile',
+          mail: process.env.LDAP_ATTR_MAIL ?? 'mail',
         dingtalk: process.env.LDAP_ATTR_DINGTALK ?? 'dingtalkUserId',
         status: process.env.LDAP_ATTR_STATUS ?? 'aiStatus'
       },

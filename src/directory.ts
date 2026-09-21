@@ -12,8 +12,10 @@ export interface DirectoryUser {
   /** 唯一标识(OIDC sub;自建目录=工号,Synology=uid 账号名) */
   sub: string
   name: string
-  dept: string
-  mobile?: string
+    dept: string
+    /** 邮箱(LDAP mail 属性);登录后作为 id_token 的 email claim 下发给业务系统 */
+    email?: string
+    mobile?: string
   dingtalkUserId: string
   status: 'active' | 'disabled'
   /** 条目真实 DN(密码 bind 用;任意布局通用) */
@@ -47,17 +49,18 @@ class LdapDirectory implements DirectoryProvider {
       const { searchEntries } = await client.search(this.ldap.peopleBase, {
         scope: 'sub',
         filter,
-        attributes: [a.sub, a.name, 'cn', a.dept, a.mobile, a.dingtalk, a.status]
+          attributes: [a.sub, a.name, 'cn', a.dept, a.mobile, a.mail, a.dingtalk, a.status]
       })
       if (searchEntries.length === 0) return null
       const e = searchEntries[0]
       const statusRaw = e[a.status] ? String(e[a.status]) : ''
       const disabled = statusRaw.toLowerCase().includes(this.ldap.statusDisabledFlag.toLowerCase())
       return {
-        sub: String(e[a.sub] ?? ''),
-        name: String(e[a.name] || e.cn || ''),
-        dept: String(e[a.dept] ?? ''),
-        mobile: e.mobile ? String(e.mobile) : undefined,
+          sub: String(e[a.sub] ?? ''),
+          name: String(e[a.name] || e.cn || ''),
+          dept: String(e[a.dept] ?? ''),
+          email: e[a.mail] ? String(e[a.mail]).trim().toLowerCase() : undefined,
+          mobile: e.mobile ? String(e.mobile) : undefined,
         dingtalkUserId: String(e[a.dingtalk] ?? ''),
         status: disabled ? 'disabled' : 'active',
         dn: e.dn
