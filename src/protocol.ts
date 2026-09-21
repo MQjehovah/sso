@@ -16,6 +16,7 @@ import { createPasswordVerifier } from './password.ts'
 import { buildScanUrl, newDingtalkState, exchangeIdentity } from './dingtalk.ts'
 import { config as cfgAll } from './config.ts'
 import { loginPage, messagePage, profilePage } from './render.ts'
+import { issueCsrf, verifyCsrf } from './csrf.ts'
 
 const directory = createDirectory()
 const verifier = createPasswordVerifier()
@@ -141,7 +142,7 @@ function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingT
   const params = new URLSearchParams({ code, ...(tx.state ? { state: tx.state } : {}) })
   // 认证完成的同一响应下发会话 Cookie(单点登录凭据)
   res.setHeader('Set-Cookie', [
-    `sso_sid=${session.sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}`
+    `sso_sid=${session.sid}; ${sessionCookieAttrs()}; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}`
   ])
   redirect(res, `${tx.redirect_uri}${tx.redirect_uri.includes('?') ? '&' : '?'}${params.toString()}`)
 }
@@ -158,7 +159,7 @@ export async function handleLoginPage(req: import('node:http').IncomingMessage, 
   const qrEnabled = cfgAll.dingtalkConfigured
   const tab = url.searchParams.get('tab') === 'pwd' || !qrEnabled ? 'pwd' : 'qr'
   const error = url.searchParams.get('error') ?? undefined
-  html(res, 200, loginPage({ txId, tab, clientName: client?.name, error, dingtalkEnabled: qrEnabled }))
+  html(res, 200, loginPage({ txId, tab, clientName: client?.name, error, dingtalkEnabled: qrEnabled, csrf: issueCsrf(txId) }))
 }
 
 export async function handlePasswordLogin(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, url: URL): Promise<void> {
@@ -171,6 +172,10 @@ export async function handlePasswordLogin(req: import('node:http').IncomingMessa
   const tx = takeTx(txId)
   if (!tx) {
     return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
+  }
+  // CSRF 先于凭据校验:token 与本次登录事务 tx 绑定
+  if (!verifyCsrf(txId, form.csrf)) {
+    return html(res, 400, messagePage('登录已过期', '页面已过期,请重新打开登录页', false))
   }
   const client = getClient(tx.client_id)
   const username = (form.username ?? '').trim()
@@ -412,7 +417,7 @@ export async function handleProfile(req: import('node:http').IncomingMessage, re
     return html(res, 401, messagePage('请先登录', '设置密码前请先通过扫码或密码登录', false))
   }
   const needCurrent = !(session.authMode === 'qr' && Date.now() - session.createdAt < 10 * 60_000)
-  html(res, 200, profilePage({ sub: session.sub, name: session.name, dept: session.dept, needCurrent, error, success }))
+  html(res, 200, profilePage({ sub: session.sub, name: session.name, dept: session.dept, needCurrent, error, success, csrf: issueCsrf(session.sid) }))
 }
 
 export async function handleProfilePassword(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
@@ -428,6 +433,8 @@ export async function handleProfilePassword(req: import('node:http').IncomingMes
   const current = needCurrent ? (form.current_password ?? null) : null
 
   const back = (error: string) => handleProfile(req, res, error)
+  // CSRF token 与当前会话 sid 绑定(与 profilePage 渲染时一致)
+  if (!verifyCsrf(session.sid, form.csrf)) return back('页面已过期,请重新打开登录页')
   if (newPassword.length < 8) return back('新密码至少 8 位')
   if (newPassword !== confirm) return back('两次输入的新密码不一致')
 
@@ -462,6 +469,12 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb)
 }
 
+/** https issuer 下会话 cookie 追加 Secure;本地 http 开发不加(否则浏览器不发送)。 */
+function sessionCookieAttrs(): string {
+  const secure = config.issuer.startsWith('https://') ? '; Secure' : ''
+  return `Path=/; HttpOnly; SameSite=Lax${secure}`
+}
+
 function clearCookie(): string {
-  return 'sso_sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'
+  return `sso_sid=; ${sessionCookieAttrs()}; Max-Age=0`
 }

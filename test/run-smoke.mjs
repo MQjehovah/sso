@@ -79,6 +79,17 @@ function ssoFetch(jar, url, opts = {}) {
   return fetch(url, { ...opts, headers, redirect: 'manual' })
 }
 
+/** 从登录页/改密页 HTML 提取与当前 tx 或 sid 绑定的 CSRF token */
+function extractCsrf(html) {
+  const m = html.match(/name="csrf" value="([^"]+)"/)
+  return m ? m[1] : ''
+}
+
+/** 取密码登录页并解析其 tx 绑定的 CSRF token */
+async function csrfForLogin(jar, base, tx) {
+  return extractCsrf(await (await ssoFetch(jar, `${base}/login?tx=${tx}&tab=pwd`)).text())
+}
+
 function spawnAndWait(cmd, args, env, healthUrl) {
   const child = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
   child.stdout.on('data', (d) => process.stdout.write(`[child] ${d}`))
@@ -103,10 +114,11 @@ async function passwordCodeGrant(base, username, password) {
   const authUrl = `${base}/authorize?client_id=test-web&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=openid&state=ttl&nonce=ttl`
   const rAuth = await ssoFetch(jar, authUrl, { redirect: 'manual' })
   const tx = new URL(rAuth.headers.get('location'), base).searchParams.get('tx')
+  const csrf = await csrfForLogin(jar, base, tx)
   const rLogin = await ssoFetch(jar, `${base}/login/password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `tx=${tx}&username=${username}&password=${password}`,
+    body: `tx=${tx}&username=${username}&password=${password}&csrf=${csrf}`,
     redirect: 'manual'
   })
   const code = new URL(rLogin.headers.get('location'), base).searchParams.get('code')
@@ -128,10 +140,11 @@ async function passwordLogin(configuration, username, password, state) {
   })
   const rAuth = await ssoFetch(jar, authUrl, { redirect: 'manual' })
   const tx = new URL(rAuth.headers.get('location'), SSO).searchParams.get('tx')
+  const csrf = await csrfForLogin(jar, SSO, tx)
   const rLogin = await ssoFetch(jar, `${SSO}/login/password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `tx=${tx}&username=${username}&password=${password}`,
+    body: `tx=${tx}&username=${username}&password=${password}&csrf=${csrf}`,
     redirect: 'manual'
   })
   jar.absorb(rLogin)
@@ -203,11 +216,25 @@ async function main() {
 
     const tx = new URL(loginLoc, SSO).searchParams.get('tx')
 
-    // 错误密码
+    // 密码页必须携带与当前 tx 绑定的 CSRF 隐藏字段
+    const pwdPage = await (await ssoFetch(jar1, `${SSO}/login?tx=${tx}&tab=pwd`)).text()
+    assert('登录页含 CSRF 隐藏字段', pwdPage.includes('name="csrf"'))
+    const csrf1 = extractCsrf(pwdPage)
+
+    // 缺少 CSRF 的登录必须被拒(400),且不消耗登录事务
+    const rNoCsrf = await ssoFetch(jar1, `${SSO}/login/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${tx}&username=10001&password=pass123`,
+      redirect: 'manual'
+    })
+    assert('缺少 CSRF 的密码登录被拒(400 + 提示)', rNoCsrf.status === 400 && (await rNoCsrf.text()).includes('页面已过期,请重新打开登录页'))
+
+    // 错误密码(带 CSRF)
     const rWrong = await ssoFetch(jar1, `${SSO}/login/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `tx=${tx}&username=10001&password=wrong-password`,
+      body: `tx=${tx}&username=10001&password=wrong-password&csrf=${csrf1}`,
       redirect: 'manual'
     })
     const wrongLoc = rWrong.headers.get('location') ?? ''
@@ -217,7 +244,7 @@ async function main() {
     const rOk = await ssoFetch(jar1, `${SSO}/login/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `tx=${tx}&username=10001&password=pass123`,
+      body: `tx=${tx}&username=10001&password=pass123&csrf=${csrf1}`,
       redirect: 'manual'
     })
     const cbUrl1 = rOk.headers.get('location') ?? ''
@@ -319,10 +346,11 @@ async function main() {
     })
     const rNo1 = await ssoFetch(jarNo, auNo, { redirect: 'manual' })
     const txNo = new URL(rNo1.headers.get('location'), SSO).searchParams.get('tx')
+    const csrfNo = await csrfForLogin(jarNo, SSO, txNo)
     const rNoLogin = await ssoFetch(jarNo, `${SSO}/login/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `tx=${txNo}&username=10004&password=pass456`,
+      body: `tx=${txNo}&username=10004&password=pass456&csrf=${csrfNo}`,
       redirect: 'manual'
     })
     const cbNo = rNoLogin.headers.get('location') ?? ''
@@ -356,10 +384,11 @@ async function main() {
     assert('跨用户对照会话签发 refresh_token', typeof ctrlRefresh === 'string' && ctrlRefresh.length > 20)
 
     // 密码登录(authMode=pwd)改密必须提供 current_password;用 jarCur 使 session.sid = sso_sid_cur
+    const csrfCur = extractCsrf(await (await ssoFetch(jarCur, `${SSO}/profile`)).text())
     const rChange = await ssoFetch(jarCur, `${SSO}/profile/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'current_password=pass456&new_password=newpass456&confirm=newpass456'
+      body: `csrf=${csrfCur}&current_password=pass456&new_password=newpass456&confirm=newpass456`
     })
     assert('改密成功', (await rChange.text()).includes('密码已保存'))
 
@@ -395,10 +424,11 @@ async function main() {
     })
     const rPw2 = await ssoFetch(jarPw2, auPw2, { redirect: 'manual' })
     const txPw2 = new URL(rPw2.headers.get('location'), SSO).searchParams.get('tx')
+    const csrfPw2 = await csrfForLogin(jarPw2, SSO, txPw2)
     const rPw2Login = await ssoFetch(jarPw2, `${SSO}/login/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `tx=${txPw2}&username=10004&password=newpass456`,
+      body: `tx=${txPw2}&username=10004&password=newpass456&csrf=${csrfPw2}`,
       redirect: 'manual'
     })
     const cbPw2 = rPw2Login.headers.get('location') ?? ''
@@ -485,10 +515,11 @@ async function main() {
 
     // ---- 密码激活(扫码后 10 分钟内免当前密码) ----
     const sid = jar2.cookies.get('sso_sid') ?? ''
+    const csrfQr = extractCsrf(await (await ssoFetch(jar2, `${SSO}/profile`)).text())
     const rSet = await ssoFetch(jar2, `${SSO}/profile/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'new_password=newpass123&confirm=newpass123'
+      body: `csrf=${csrfQr}&new_password=newpass123&confirm=newpass123`
     })
     const setBody = await rSet.text()
     assert('扫码后激活密码通道', setBody.includes('密码已保存'))
@@ -501,10 +532,11 @@ async function main() {
     })
     const rAu = await ssoFetch(jarNew, auNew, { redirect: 'manual' })
     const txNew = new URL(rAu.headers.get('location'), SSO).searchParams.get('tx')
+    const csrfNew = await csrfForLogin(jarNew, SSO, txNew)
     const rNewLogin = await ssoFetch(jarNew, `${SSO}/login/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `tx=${txNew}&username=10003&password=newpass123`,
+      body: `tx=${txNew}&username=10003&password=newpass123&csrf=${csrfNew}`,
       redirect: 'manual'
     })
     assert('新设密码可登录', (rNewLogin.headers.get('location') ?? '').startsWith(REDIRECT_URI))

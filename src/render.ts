@@ -29,11 +29,12 @@ const BASE_STYLE = `
 export function loginPage(opts: {
   txId: string
   tab: 'qr' | 'pwd'
+  csrf: string
   clientName?: string
   error?: string
   dingtalkEnabled?: boolean
 }): string {
-  const { txId, tab, clientName, error, dingtalkEnabled = true } = opts
+  const { txId, tab, csrf, clientName, error, dingtalkEnabled = true } = opts
   const err = error ? `<div class="err">${escapeHtml(error)}</div>` : ''
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>统一登录</title>
 <style>${BASE_STYLE}</style></head><body>
@@ -50,6 +51,7 @@ export function loginPage(opts: {
     ? `<a class="btn primary" href="/dingtalk/start?tx=${txId}">打开钉钉扫码</a>`
     : `${err}<form method="post" action="/login/password">
         <input type="hidden" name="tx" value="${txId}" />
+        <input type="hidden" name="csrf" value="${csrf}" />
         <label>工号或手机号</label><input name="username" autocomplete="username" required />
         <label>密码</label><input name="password" type="password" autocomplete="current-password" required />
         <label></label><button class="btn primary" type="submit">登 录</button>
@@ -75,10 +77,11 @@ export function profilePage(opts: {
   name: string
   dept: string
   needCurrent: boolean
+  csrf: string
   error?: string
   success?: string
 }): string {
-  const { sub, name, dept, needCurrent, error, success } = opts
+  const { sub, name, dept, needCurrent, csrf, error, success } = opts
   const err = error ? `<div class="err">${escapeHtml(error)}</div>` : ''
   const ok = success ? `<div class="err" style="background:#1b2b1e;border-color:#2a5a32;color:#8fd19a">${escapeHtml(success)}</div>` : ''
   const current = needCurrent
@@ -92,6 +95,7 @@ export function profilePage(opts: {
   <div class="sub">${escapeHtml(name)}(${escapeHtml(sub)}) · ${escapeHtml(dept)}</div>
   ${err}${ok}
   <form method="post" action="/profile/password">
+    <input type="hidden" name="csrf" value="${csrf}" />
     ${current}
     <label>新密码(至少 8 位)</label><input name="new_password" type="password" minlength="8" required />
     <label>确认新密码</label><input name="confirm" type="password" minlength="8" required />
