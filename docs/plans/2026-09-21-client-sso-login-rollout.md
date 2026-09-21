@@ -245,6 +245,33 @@ dashboard 桌面端沿用统一认证；SSO 侧只需为每个系统登记公网
 **排查提示:** 「后端 curl 正常但页面报错」时，先看前端产物里的**实际请求 URL**
 （`grep -oE 'fetch\([^)]{0,90}' 产物.js`），子路径部署最常见的坑就是漏改前缀。
 
+### 9.4 rag 报「无效的认证令牌」——同源应用 localStorage 键冲突
+
+**症状:** 问答请求已打到正确后端 ✓，但返回 401「无效的认证令牌」；后端日志呈
+`401 → 200（用工具自测）→ 401` 交替。
+
+**根因:** 四个系统都部署在**同一 origin**（`https://ai.xzrobot.com`，靠路径区分），
+而 localStorage 是**按 origin 隔离、不按路径隔离**的 —— rag 与 router 控制台都用了
+裸键 `localStorage['token']`，于是互相覆盖：访问过 router 控制台后，rag 读到的是
+router 的 JWT（用 router 的 JWT_SECRET 签的），rag 验签必然失败 → 401。
+
+| 应用 | 原键 | 是否冲突 |
+|---|---|---|
+| rag | `token` | ✗ 与 router 冲突 |
+| router 控制台 | `token` | ✗ 与 rag 冲突 |
+| agent | `agent_jwt` | ✓ 已隔离 |
+| market | `mk_token` / `mk_user` | ✓ 已隔离 |
+
+**修复:** rag → `rag_token`（9 处/5 文件），router → `router_token`（7 处/3 文件），
+与 agent/market 的命名风格对齐。**不做旧键迁移**：同源的旧 `token` 值归属不可判定
+（可能是 rag 的也可能是 router 的），统一要求重新登录一次。
+
+**验证:** 线上产物 rag 侧 `rag_token` 出现 9 次、router 侧 `router_token` 7 次，
+裸 `localStorage` 存取 `token` 均为 0；两端页面 200，`vue-tsc`/构建通过。
+
+**给后续开发的提醒:** 同一域名下多应用共用 localStorage 时，**任何持久化键都要加应用前缀**
+（含 token、用户信息、草稿、折叠状态等），否则会出现这种"登录好好的、过一会儿就 401"的怪现象。
+
 ## 十、回滚
 
 - **agent**：`/home/xzrobot/agent/src/web/server.py.bak-svcperm-<ts>`（服务令牌改动）；
