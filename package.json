@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
     "test:smoke": "node test/run-smoke.mjs",
+    "check:strict-config": "node scripts/check-strict-config.mjs",
     "test:mock-dingtalk": "node test/mock-dingtalk.mjs",
     "key:rotate": "node --experimental-strip-types --env-file-if-exists=.env src/cli/keys.ts rotate",
     "key:list": "node --experimental-strip-types --env-file-if-exists=.env src/cli/keys.ts list",

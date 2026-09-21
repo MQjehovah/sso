@@ -56,11 +56,12 @@ const server = createServer((req, res) => {
   })
 })
 
-// 启动自检:客户端注册文件必须可用(快速失败)
+// 启动自检:必需配置与客户端注册文件必须在监听端口前校验(弱配置直接退出,不占用端口)
+const issuer = config.issuer
 loadClients()
 
 server.listen(config.port, '0.0.0.0', () => {
-  console.log(`[sso] 统一认证服务已启动 ${config.issuer}(端口 ${config.port})`)
+  console.log(`[sso] 统一认证服务已启动 ${issuer}(端口 ${config.port})`)
   const provider = process.env.LDAP_URL ? 'OpenLDAP' : '文件目录(开发模式)'
   console.log(`[sso] 用户目录:${provider} · 认证:钉钉扫码 + 账号密码(LDAP bind)`)
 })
