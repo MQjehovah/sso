@@ -147,7 +147,26 @@ dashboard 桌面端沿用统一认证；SSO 侧只需为每个系统登记公网
 | agent ruff + 相关测试 | All checks passed / 72 passed（全量套件在本工作区**既有**收集错误，与本次无关） |
 | 服务令牌范围修复 | `/api/rbac/users` 带服务令牌 200（原 401），无凭证/错误令牌仍 401 |
 
-## 七、回滚
+## 七、收尾补充（2026-09-21 晚）
+
+1. **SSO 回调失败一律跳登录页并回显原因**（原先 agent/market 返回 401 裸 JSON，与 rag/router 不一致）：
+   - agent：`src/web/server.py` 新增 `_sso_login_redirect()`，回调各错误分支改 302 → `/agent/#/login?error=...`；
+     前端 `LoginView.vue` 读 `route.query.error` 填入既有错误提示位；新产物已随镜像目录
+     `src/web/static_vue/`（入库）一起部署。
+   - market：`backend/app/routers/auth.py` 新增 `_sso_login_redirect()` → `/market/login?error=...`；
+     前端 `LoginView.vue` 读 `route.query.error`（**保留了服务器版独有的「演示账号」块**，
+     该文件在服务器上有本地没有的内容，故用外科插入而非整体替换）。
+   - 现在四个系统的回调错误分支表现一致（302 + error 文案）。
+
+2. **`ai.xzrobot.com` 根路径导航页**：45 上新增 `/home/xzrobot/docker/nginx/html/ai-index.html`
+   （列出四个系统入口 + 统一认证入口），nginx 的 80 / 8888 / 443 三个 server 块各加一条
+   `location = /`（精确匹配，不影响 `location /` 到 LLM 网关的 `/v1/...` 转发）。
+
+3. **顺带修复**：443 块里 `/internal/` 的 404 规则此前被上一行注释**吞掉**（两行并成一行 →
+   整行成了注释），`/internal/` 的 404 实际由上游网关给出。已拆回独立行，现在由 nginx 硬拦
+   （实测 nginx 自己的 404 页）。
+
+## 八、回滚
 
 - **agent**：`/home/xzrobot/agent/src/web/server.py.bak-svcperm-<ts>`（服务令牌改动）；
   SSO 配置在 `.env` 与 `build.sh`（`--add-host` 行），删掉即回到「仅本地登录」。
