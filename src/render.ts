@@ -1,12 +1,16 @@
 /** 登录页与简单页面模板(内联样式,无前端框架依赖) */
 
+import { LOGO_SVG } from './brand.ts'
+
 const BASE_STYLE = `
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#161616;color:#e8e8e8;
        display:flex;align-items:center;justify-content:center;min-height:100vh}
   .card{width:400px;background:#1e1e1e;border:1px solid #2e2e2e;border-radius:14px;padding:32px}
-  .logo{width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#409eff,#7c3aed);
-        color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 14px}
+  .logo{width:36px;height:36px;margin:0 auto 14px}
+  .logo svg{width:100%;height:100%;display:block}
+  .logo .mark{width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#409eff,#7c3aed);
+        color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
   h1{font-size:17px;text-align:center;margin-bottom:6px;font-weight:600}
   .sub{text-align:center;color:#9b9b9b;font-size:12.5px;margin-bottom:22px}
   .tabs{display:flex;border:1px solid #2e2e2e;border-radius:9px;overflow:hidden;margin-bottom:20px}
@@ -39,7 +43,7 @@ export function loginPage(opts: {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>统一登录</title>
 <style>${BASE_STYLE}</style></head><body>
 <div class="card">
-  <div class="logo">Z</div>
+  <div class="logo">${LOGO_SVG}</div>
   <h1>统一身份登录</h1>
   <div class="sub">${clientName ? escapeHtml(clientName) + ' · ' : ''}使用公司统一账号继续</div>
   <div class="tabs">
@@ -74,7 +78,7 @@ export function homePage(opts: { signedIn: boolean; name?: string; sub?: string 
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>统一身份认证</title>
 <style>${BASE_STYLE}</style></head><body>
 <div class="card">
-  <div class="logo">Z</div>
+  <div class="logo">${LOGO_SVG}</div>
   <h1>统一身份认证服务</h1>
   ${body}
   <div class="hint">仅限公司内部系统使用</div>
@@ -86,7 +90,7 @@ export function messagePage(title: string, detail: string, ok: boolean): string 
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>${BASE_STYLE}</style></head><body>
 <div class="card">
-  <div class="logo">${ok ? '✓' : '!'}</div>
+  <div class="logo"><span class="mark">${ok ? '✓' : '!'}</span></div>
   <h1>${escapeHtml(title)}</h1>
   <p class="sub">${escapeHtml(detail)}</p>
 </div>
@@ -111,7 +115,7 @@ export function profilePage(opts: {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>账号设置</title>
 <style>${BASE_STYLE}</style></head><body>
 <div class="card">
-  <div class="logo">Z</div>
+  <div class="logo">${LOGO_SVG}</div>
   <h1>账号设置 · 登录密码</h1>
   <div class="sub">${escapeHtml(name)}(${escapeHtml(sub)}) · ${escapeHtml(dept)}</div>
   ${err}${ok}
