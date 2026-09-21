@@ -216,6 +216,35 @@ dashboard 桌面端沿用统一认证；SSO 侧只需为每个系统登记公网
 **验证:** 容器内直测 embedding 返回 1024 维向量；经公网提问回答变为
 「根据参考资料，我找到了一些…」并**带回 sources**，后端错误计数 0。
 
+### 9.3 rag 问答前端仍报「错误: Not Found」（子路径补丁有遗漏）
+
+**症状:** 后端问答已正常（curl 打 `/rag/api/chat` 是 200），但**页面里**提问仍显示
+`错误: Not Found`。
+
+**根因:** 前端里三处调用写的是**绝对路径，缺 `/rag` 前缀**（子路径改造时漏改），
+浏览器于是请求 `https://ai.xzrobot.com/api/chat`，被 45 的兜底 `location /`
+转发到 LLM 网关 → 404；对 404 的 JSON 取 `err.detail` 就渲染成「错误: Not Found」。
+漏掉的三处：
+
+| 位置 | 原写法 | 影响 |
+|---|---|---|
+| `views/Chat.vue` | `fetch('/api/chat')` | **问答直接 404** |
+| `views/Editor.vue` | `fetch('/api/organize')` | 笔记"自动整理"404 |
+| `api/http.ts` | `window.location.href = '/login'` | 401 时跳到错误地址 |
+
+（`stores/auth.ts`、`api/http.ts` 的 axios 实例都用了 `BASE_URL`，所以登录与大部分接口正常 ✓）
+
+**修复:** 三处统一改成既有惯用写法
+`(import.meta.env.BASE_URL || '/').replace(/\/$/, '') + '/api/...'`，重建前端后
+在产物里核对：带 `/rag` 前缀的调用出现 6 条，裸 `fetch("/api/chat")` 与裸 `/login` 均为 0。
+
+**顺带修:** 前端 nginx 的 `location /` 增加 `Cache-Control: no-cache`。
+此前入口 HTML 没有任何缓存头，前端重建后浏览器可能仍用旧 index.html
+（引用已删除的 hash 资源 → 白屏/报错），也会让人误以为"改的没生效"。
+
+**排查提示:** 「后端 curl 正常但页面报错」时，先看前端产物里的**实际请求 URL**
+（`grep -oE 'fetch\([^)]{0,90}' 产物.js`），子路径部署最常见的坑就是漏改前缀。
+
 ## 十、回滚
 
 - **agent**：`/home/xzrobot/agent/src/web/server.py.bak-svcperm-<ts>`（服务令牌改动）；
