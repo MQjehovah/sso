@@ -30,6 +30,11 @@ const BASE_STYLE = `
   .hint{text-align:center;color:#9b9b9b;font-size:11.5px;margin-top:16px}
 `
 
+/** 绿色成功提示块(与 .err 同布局,换配色);无文案返回空串 */
+function successBlock(text?: string): string {
+  return text ? `<div class="err" style="background:#1b2b1e;border-color:#2a5a32;color:#8fd19a">${escapeHtml(text)}</div>` : ''
+}
+
 export function loginPage(opts: {
   txId: string
   tab: 'qr' | 'pwd'
@@ -42,7 +47,7 @@ export function loginPage(opts: {
 }): string {
   const { txId, tab, csrf, clientName, error, notice, dingtalkEnabled = true } = opts
   const err = error ? `<div class="err">${escapeHtml(error)}</div>` : ''
-  const ok = notice ? `<div class="err" style="background:#1b2b1e;border-color:#2a5a32;color:#8fd19a">${escapeHtml(notice)}</div>` : ''
+  const ok = successBlock(notice)
   // txId 为空=重置完成后的回执页:没有登录事务,不渲染标签页与登录表单,避免死链/无效提交
   const hasTx = !!txId
   const tabs = hasTx
@@ -81,7 +86,7 @@ export function loginPage(opts: {
 export function resetPage(opts: { step: 1 | 2; sub?: string; notice?: string; error?: string }): string {
   const { step, sub, notice, error } = opts
   const err = error ? `<div class="err">${escapeHtml(error)}</div>` : ''
-  const ok = notice ? `<div class="err" style="background:#1b2b1e;border-color:#2a5a32;color:#8fd19a">${escapeHtml(notice)}</div>` : ''
+  const ok = successBlock(notice)
   const form = step === 1
     ? `<form method="post" action="/reset/request">
         <label>工号或手机号</label><input name="sub" autocomplete="username" required />
@@ -151,7 +156,7 @@ export function profilePage(opts: {
 }): string {
   const { sub, name, dept, needCurrent, csrf, error, success } = opts
   const err = error ? `<div class="err">${escapeHtml(error)}</div>` : ''
-  const ok = success ? `<div class="err" style="background:#1b2b1e;border-color:#2a5a32;color:#8fd19a">${escapeHtml(success)}</div>` : ''
+  const ok = successBlock(success)
   const current = needCurrent
     ? `<label>当前密码</label><input name="current_password" type="password" autocomplete="current-password" />`
     : `<div class="hint" style="margin:0 0 4px">首次设置密码(当前账号尚未设置密码)</div>`

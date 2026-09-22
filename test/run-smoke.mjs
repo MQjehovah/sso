@@ -719,6 +719,9 @@ async function main() {
       SSO_KEYS_DIR: 'test/keys-reset',
       SSO_CLIENTS_PATH: 'test/fixtures/clients.json',
       FILE_USERS_PATH: 'test/data/users.json',
+      // 显式非生产:避免父进程 APP_ENV=prod/production 时 FAKE_CAPTURE 被生产守卫忽略
+      NODE_ENV: 'test',
+      APP_ENV: '',
       // 验证码邮件写入文件而非真实 SMTP
       SSO_SMTP_FAKE_CAPTURE: 'test/data-reset/smtp-capture.jsonl'
     })
@@ -735,6 +738,14 @@ async function main() {
           return []
         }
       }
+      // 发信已转后台:轮询等待捕获落盘
+      const waitForMails = async (n, timeoutMs = 3000) => {
+        const deadline = Date.now() + timeoutMs
+        while (Date.now() < deadline && captureMails().length < n) {
+          await new Promise((r) => setTimeout(r, 20))
+        }
+        return captureMails()
+      }
       const postForm = (path, body) => fetch(`${RESET}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -748,7 +759,7 @@ async function main() {
       const rResetReq = await postForm('/reset/request', 'sub=10001')
       const resetReqHtml = await rResetReq.text()
       assert('重置请求 200:渲染 step2 并显示统一文案', rResetReq.status === 200 && resetReqHtml.includes('action="/reset/confirm"') && resetReqHtml.includes(RESET_REQUEST_MESSAGE))
-      const mails1 = captureMails()
+      const mails1 = await waitForMails(1)
       assert('捕获文件新增一封验证码邮件', mails1.length === 1)
       const resetMail = mails1[0] ?? {}
       const codeMatch = String(resetMail.text ?? '').match(/验证码为:(\d{6})/)

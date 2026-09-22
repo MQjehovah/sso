@@ -67,7 +67,15 @@ npm 脚本:
 | `DINGTALK_LOGIN_BASE` | `https://login.dingtalk.com` | 扫码授权页基地址 |
 | `SSO_DINGTALK_REDIRECT_URI` | 无 | 启用扫码时必填,须与钉钉后台回流域名一致,如 `http://127.0.0.1:8091/dingtalk/callback` |
 | `SSO_DEBUG` | 未设置 | 任意非空值开启调试日志(如 PKCE、userinfo 校验细节),生产留空 |
-| `SSO_TRUST_PROXY` | 未设置 | 设为 `true` 时信任反代头(`x-real-ip` 优先,其次 `x-forwarded-for` 最后一段;仅合法 IPv4/IPv6 才采用)作为客户端 IP,用于限流;服务被直连暴露时保持关闭防伪造 |
+| `SSO_TRUST_PROXY` | 未设置 | 设为 `true` 时信任反代头(`x-real-ip` 优先,其次 `x-forwarded-for` 最后一段;归一化去方括号/端口,仅合法 IPv4/IPv6 才采用)作为客户端 IP,用于限流;服务被直连暴露时保持关闭防伪造 |
+| `SSO_SMTP_HOST` | 未设置 | SMTP 主机;与 `SSO_SMTP_USERNAME`、`SSO_SMTP_PASSWORD` 同时非空才算「邮件已配置」,未配置时自助重置降级提示,不影响启动 |
+| `SSO_SMTP_PORT` | `465` | SMTP 端口(≥1 的整数,非法快速失败) |
+| `SSO_SMTP_SECURE` | `true` | `false` 时关闭 TLS(如 587/STARTTLS) |
+| `SSO_SMTP_USERNAME` | 未设置 | SMTP 登录账号 |
+| `SSO_SMTP_PASSWORD` | 未设置 | SMTP 登录密码/授权码,不要提交到版本库 |
+| `SSO_SMTP_FROM_NAME` | `零号员工` | 发件人显示名 |
+| `SSO_SMTP_FROM` | 未设置 | 发件地址,默认与 `SSO_SMTP_USERNAME` 相同 |
+| `SSO_RESET_CODE_TTL_SECONDS` | `600` | 自助重置验证码有效期(秒,≥60);邮件正文的分钟数与实际 TTL 同源 |
 | `SSO_SECRET_*` | 无 | 客户端密钥,由 `src/clients.ts` 在展开 `clients.json` 的 `${ENV:...}` 占位时读取;未设置或为空串会导致启动失败。示例见 `.env.example`:`SSO_SECRET_AGENT`、`SSO_SECRET_DASHBOARD`、`SSO_SECRET_MARKET`、`SSO_SECRET_RAG`、`SSO_SECRET_ROUTER`、`SSO_SECRET_ZHONGTAI_OA`、`SSO_SECRET_TEST_WEB` |
 
 > 说明:`authorize` 事务 TTL 固定 10 分钟、授权码 TTL 固定 5 分钟,不可通过环境变量调整。
@@ -150,14 +158,17 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 | `/logout` | GET | 销毁会话并吊销该用户 refresh token,可跳回已登记的 `post_logout_redirect_uri` |
 | `/profile` | GET | 账号设置页(需已登录);扫码后 10 分钟内可免当前密码激活 |
 | `/profile/password` | POST | 设置/修改密码,成功后吊销该用户 refresh token 与其它端会话 |
+| `/reset` | GET | 自助重置第一步页(输入工号发送验证码) |
+| `/reset/request` | POST | 发送重置验证码:统一文案防枚举;IP 10/h + 冷却 60s + 5/h 限流;禁用账号/无邮箱/未配置 SMTP 均静默不发信 |
+| `/reset/confirm` | POST | 校验验证码并重置密码(仅要求 ≥8 位,与 `/profile` 一致);成功后吊销该用户全部会话与 refresh token,并邮件通知 |
 | `/healthz` | GET | 健康检查,返回 `{"status":"ok"}` |
 
 ## 测试
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # 单元测试(44 个用例)
+npm test            # 单元测试(93 个用例)
 npm run test:smoke  # 端到端烟测,需 test/fixtures/clients.json 与 test/data/users.json 夹具
 ```
 
-烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、密码激活、禁用账号扫码被拒、授权码一次性、单点登录、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)。
+烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、密码激活、禁用账号扫码被拒、授权码一次性、单点登录、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)、自助重置(两步表单/验证码邮件捕获/错码与密码不一致/重置后旧密码与旧 refresh token 失效/枚举防护)。

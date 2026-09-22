@@ -74,11 +74,20 @@ function formToObject(body: Buffer): Record<string, string> {
   return Object.fromEntries(new URLSearchParams(body.toString('utf-8')))
 }
 
+/** 归一化代理头里的 IP:剥掉 `[IPv6]:port` 的方括号与端口、`IPv4:port` 的端口 */
+function normalizeIp(raw: string): string {
+  const bracketed = raw.match(/^\[([^\]]+)\](?::\d+)?$/)
+  if (bracketed) return bracketed[1]
+  const v4WithPort = raw.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/)
+  if (v4WithPort) return v4WithPort[1]
+  return raw
+}
+
 /**
  * 客户端 IP:
  * - trustProxy=false(默认):仅用 socket 地址,忽略可伪造的转发头;
  * - trustProxy=true:优先 x-real-ip(nginx 用 $remote_addr 覆盖写),其次 x-forwarded-for 最后一段,
- *   仅合法 IPv4/IPv6 才采用,非法/缺失回退 socket 地址(防头部注入乱值)。
+ *   归一化(去方括号/端口)后仅合法 IPv4/IPv6 才采用,非法/缺失回退 socket 地址(防头部注入乱值)。
  */
 export function clientIp(req: { socket: { remoteAddress?: string }; headers: Record<string, string | string[] | undefined> }): string {
   const socketIp = req.socket.remoteAddress ?? 'unknown'
@@ -87,7 +96,7 @@ export function clientIp(req: { socket: { remoteAddress?: string }; headers: Rec
     const v = req.headers[name]
     return (Array.isArray(v) ? v[0] : v ?? '').trim()
   }
-  const candidate = header('x-real-ip') || (header('x-forwarded-for').split(',').pop() ?? '').trim()
+  const candidate = normalizeIp(header('x-real-ip') || (header('x-forwarded-for').split(',').pop() ?? '').trim())
   return isIP(candidate) ? candidate : socketIp
 }
 

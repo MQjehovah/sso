@@ -28,6 +28,8 @@ export function createResetCodeStore(dir: string, opts?: { now?: () => number; t
   issue(sub: string, email: string, code: string, ip: string): void
   verifyAndConsume(sub: string, code: string): VerifyResult
   peek(sub: string): ResetCodeRecord | undefined
+  /** 当前存储的有效期(秒),供邮件文案与实际 TTL 保持一致 */
+  readonly ttlSeconds: number
 } {
   const file = join(dir, 'reset_codes.json')
   const now = opts?.now ?? Date.now
@@ -67,6 +69,8 @@ export function createResetCodeStore(dir: string, opts?: { now?: () => number; t
   }
 
   return {
+    ttlSeconds,
+
     issue(sub: string, email: string, code: string, ip: string): void {
       ensureLoaded()
       prune()
@@ -139,60 +143,69 @@ export interface ResetDeps {
   revokeSessions(sub: string): void
   revokeTokens(sub: string): void
   audit(evt: { event: string; ok: boolean; sub?: string; ip?: string; detail?: string }): void
-  now?: () => number
 }
 
 /** 统一文案(不泄露账号存在性) */
 export const RESET_REQUEST_MESSAGE = '若该工号存在, 验证码已发送至其企业邮箱'
 export const RESET_FAIL_MESSAGE = '验证码无效或已过期, 请重新获取'
 
-/** 请求重置:限流 → 查目录 → 有邮箱且邮件已配置才生成码并发送;任何分支都返回统一文案 */
+/** 请求重置:IP 限流 → 查目录 → 规范 sub 限流 → 有邮箱且未禁用且邮件已配置才生成码并后台发信;任何分支都返回统一文案 */
 export async function requestReset(input: { sub: string; ip: string }, deps: ResetDeps): Promise<{ message: string }> {
   const sub = input.sub.trim()
   const ip = input.ip
-  const deny = (detail: string): { message: string } => {
-    deps.audit({ event: 'reset_request', ok: false, sub: sub || undefined, ip, detail })
+  const auditWith = (ok: boolean, auditSub: string, detail: string): void => {
+    deps.audit({ event: 'reset_request', ok, sub: auditSub || undefined, ip, detail })
+  }
+  const deny = (detail: string, auditSub = sub): { message: string } => {
+    auditWith(false, auditSub, detail)
     return { message: RESET_REQUEST_MESSAGE }
   }
   if (!sub) return deny('工号为空')
+  // IP 限流先于目录查询:挡批量滥用,也避免目录被反复探测
+  if (!deps.rateLimit(`reset:ip:${ip}`, 10, 3_600_000)) return deny(`限流:reset:ip:${ip}`)
+
+  const user = await deps.directory.findByIdentifier(sub)
+  // per-sub 限流与验证码一律用目录规范 sub 键控,防"工号/手机号交替"绕过
+  const subKey = user?.sub ?? sub
   // 冷却与小时配额必须用不同 key:滑动窗口实现按当前窗口裁剪同一 key 的时间戳,
   // 同 key 的 60s 调用会把 1h 历史裁掉,导致小时上限永不触发
   const limits = [
-    { key: `reset:send:${sub}`, limit: 1, windowMs: 60_000 },
-    { key: `reset:send:h:${sub}`, limit: 5, windowMs: 3_600_000 },
-    { key: `reset:ip:${ip}`, limit: 10, windowMs: 3_600_000 }
+    { key: `reset:send:${subKey}`, limit: 1, windowMs: 60_000 },
+    { key: `reset:send:h:${subKey}`, limit: 5, windowMs: 3_600_000 }
   ]
   for (const l of limits) {
-    if (!deps.rateLimit(l.key, l.limit, l.windowMs)) return deny(`限流:${l.key}`)
+    if (!deps.rateLimit(l.key, l.limit, l.windowMs)) return deny(`限流:${l.key}`, subKey)
   }
 
-  const user = await deps.directory.findByIdentifier(sub)
-  let sent = false
-  let reason = '目录中无此工号'
-  if (user && !user.email) {
-    reason = '用户未登记企业邮箱'
-  } else if (user && !deps.mailer.isConfigured()) {
-    reason = '邮件服务未配置'
-  } else if (user?.email) {
-    const code = String(randomInt(0, 1_000_000)).padStart(6, '0')
-    deps.codes.issue(sub, user.email, code, ip)
-    try {
-      await deps.mailer.sendVerificationCode({
-        to: user.email,
-        code,
-        ttlMinutes: Math.max(1, Math.round(config.resetCodeTtlSeconds / 60))
-      })
-      sent = true
-      reason = '已发送'
-    } catch (err) {
-      reason = `发送失败: ${(err as Error).message}`
-    }
+  const noSend = (reason: string): { message: string } => {
+    auditWith(true, subKey, JSON.stringify({ sent: false, reason }))
+    return { message: RESET_REQUEST_MESSAGE }
   }
-  deps.audit({ event: 'reset_request', ok: true, sub: user?.sub ?? sub, ip, detail: JSON.stringify({ sent, reason }) })
+  if (!user) return noSend('目录中无此工号')
+  // 离职/停用账号不得自助重置(否则等于绕过离职流程解锁 LDAP 密码)
+  if (user.status !== 'active') return noSend('账号已禁用')
+  if (!user.email) return noSend('用户未登记企业邮箱')
+  if (!deps.mailer.isConfigured()) return noSend('邮件服务未配置')
+
+  const code = String(randomInt(0, 1_000_000)).padStart(6, '0')
+  deps.codes.issue(user.sub, user.email, code, ip)
+  // 后台发信:立即返回统一文案,避免"工号存在→响应更慢"的时间旁路;成功/失败均落审计
+  void deps.mailer
+    .sendVerificationCode({
+      to: user.email,
+      code,
+      ttlMinutes: Math.max(1, Math.round(deps.codes.ttlSeconds / 60))
+    })
+    .then(() => {
+      auditWith(true, user.sub, JSON.stringify({ sent: true, reason: '已发送' }))
+    })
+    .catch((err: unknown) => {
+      auditWith(true, user.sub, JSON.stringify({ sent: false, reason: `发送失败: ${(err as Error).message}` }))
+    })
   return { message: RESET_REQUEST_MESSAGE }
 }
 
-/** 确认重置:校验密码长度 → 消费验证码 → 查目录 → 写密码 → 踢会话/token → 变更通知(best-effort) */
+/** 确认重置:校验密码长度 → 查目录/禁用校验 → 消费验证码 → 写密码 → 踢会话/token → 变更通知(best-effort) */
 export async function confirmReset(
   input: { sub: string; code: string; newPassword: string; ip: string },
   deps: ResetDeps
@@ -210,25 +223,32 @@ export async function confirmReset(
     return { ok: false, message: '新密码至少 8 位' }
   }
 
-  const result = deps.codes.verifyAndConsume(sub, input.code)
-  if (result !== 'ok') return fail(`验证码校验失败(${result})`)
-
   const user = await deps.directory.findByIdentifier(sub)
+  if (user) auditSub = user.sub
+  // 禁用账号在消费验证码与写密码之前拦截
+  if (user && user.status !== 'active') return fail('账号已禁用')
+
+  const result = deps.codes.verifyAndConsume(user?.sub ?? sub, input.code)
+  if (result !== 'ok') return fail(`验证码校验失败(${result})`)
   if (!user) return fail('目录中无此工号')
-  auditSub = user.sub
+
   try {
     await deps.password.setPassword(user, null, input.newPassword)
   } catch (err) {
     return fail(`设置密码失败: ${(err as Error).message}`)
   }
 
-  // 密码已改是既成事实:revoke 落盘异常只记审计,不阻断成功返回与变更通知
-  let revokeError: string | undefined
+  // 密码已改是既成事实:revoke 落盘异常只记审计,不阻断成功返回与变更通知;两项各自独立兜底
+  const revokeErrors: string[] = []
   try {
     deps.revokeSessions(user.sub)
+  } catch (err) {
+    revokeErrors.push(`revokeSessions: ${(err as Error).message}`)
+  }
+  try {
     deps.revokeTokens(user.sub)
   } catch (err) {
-    revokeError = (err as Error).message
+    revokeErrors.push(`revokeTokens: ${(err as Error).message}`)
   }
   let noticeError: string | undefined
   if (user.email) {
@@ -239,7 +259,7 @@ export async function confirmReset(
     }
   }
   const details = [
-    revokeError ? `revokeError: ${revokeError}` : '',
+    revokeErrors.length ? `revokeError: ${revokeErrors.join('; ')}` : '',
     noticeError ? `变更通知发送失败: ${noticeError}` : ''
   ].filter(Boolean)
   deps.audit({

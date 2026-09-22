@@ -59,6 +59,23 @@ test('trustProxy 开启:合法 IPv6 采用', () => {
   })
 })
 
+test('trustProxy 开启:剥掉 [IPv6]:port 的方括号与端口', () => {
+  withEnv({ SSO_TRUST_PROXY: 'true' }, () => {
+    assert.equal(clientIp(req({ 'x-real-ip': '[2001:db8::1]:443' })), '2001:db8::1')
+    assert.equal(clientIp(req({ 'x-real-ip': '[2001:db8::1]' })), '2001:db8::1')
+    assert.equal(clientIp(req({ 'x-forwarded-for': '203.0.113.9, [2001:db8::2]:8443' })), '2001:db8::2')
+  })
+})
+
+test('trustProxy 开启:剥掉 IPv4:port 的端口', () => {
+  withEnv({ SSO_TRUST_PROXY: 'true' }, () => {
+    assert.equal(clientIp(req({ 'x-real-ip': '1.2.3.4:5678' })), '1.2.3.4')
+    assert.equal(clientIp(req({ 'x-forwarded-for': '203.0.113.9, 198.51.100.7:1234' })), '198.51.100.7')
+    // 端口非数字不剥离 → 非法 → 回退
+    assert.equal(clientIp(req({ 'x-real-ip': '1.2.3.4:abc' })), '10.0.0.1')
+  })
+})
+
 test('trustProxy 开启:头缺失回退 socket', () => {
   withEnv({ SSO_TRUST_PROXY: 'true' }, () => {
     assert.equal(clientIp(req({})), '10.0.0.1')
