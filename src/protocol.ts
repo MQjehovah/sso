@@ -635,18 +635,27 @@ export async function handleProfilePassword(req: import('node:http').IncomingMes
   }
 }
 
-/** 个人页「退出登录」:与 GET /logout 同语义(销毁会话 + 清 Cookie + 吊销该账号 refresh token) */
-export async function handleProfileLogout(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+/** logout/switch 共用校验:当前会话(无会话 401) → CSRF(绑「sid」);失败时已写响应并返回 null */
+function validateProfilePost(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, form: Record<string, string>): SsoSession | null {
   const cookies = parseCookies(req.headers.cookie)
   const session = getSession(cookies['sso_sid'])
   if (!session) {
-    return html(res, 401, messagePage('请先登录', '设置密码前请先通过扫码或密码登录', false))
+    html(res, 401, messagePage('请先登录', '请先通过扫码或密码登录', false))
+    return null
   }
   // CSRF token 与当前会话 sid 绑定(与 profilePage 渲染时一致)
-  const form = formToObject(await readBody(req))
   if (!verifyCsrf(session.sid, form.csrf)) {
-    return html(res, 400, messagePage('页面已过期', '页面已过期,请重新打开登录页', false))
+    html(res, 400, messagePage('页面已过期', '页面已过期,请重新打开登录页', false))
+    return null
   }
+  return session
+}
+
+/** 个人页「退出登录」:与 GET /logout 同语义(销毁会话 + 清 Cookie + 吊销该账号 refresh token) */
+export async function handleProfileLogout(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const form = formToObject(await readBody(req))
+  const session = validateProfilePost(req, res, form)
+  if (!session) return
   const ip = clientIp(req)
   destroySession(session.sid)
   revokeRefreshTokens(session.sub)
@@ -655,17 +664,11 @@ export async function handleProfileLogout(req: import('node:http').IncomingMessa
   html(res, 200, messagePage('已退出登录', '你已退出统一身份,可关闭本页面', true))
 }
 
-/** 个人页「切换其他账号」:仅销毁 SSO 会话(不 revoke refresh token,不影响该账号其他业务系统登录态) */
+/** 个人页「使用其他账号」:仅销毁 SSO 会话(不 revoke refresh token,不影响该账号其他业务系统登录态) */
 export async function handleProfileSwitch(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
-  const cookies = parseCookies(req.headers.cookie)
-  const session = getSession(cookies['sso_sid'])
-  if (!session) {
-    return html(res, 401, messagePage('请先登录', '设置密码前请先通过扫码或密码登录', false))
-  }
   const form = formToObject(await readBody(req))
-  if (!verifyCsrf(session.sid, form.csrf)) {
-    return html(res, 400, messagePage('页面已过期', '页面已过期,请重新打开登录页', false))
-  }
+  const session = validateProfilePost(req, res, form)
+  if (!session) return
   const ip = clientIp(req)
   destroySession(session.sid)
   res.setHeader('Set-Cookie', clearCookie())

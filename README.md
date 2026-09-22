@@ -137,6 +137,7 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 
 - 登出(`/logout`)会立即销毁该用户的 SSO 会话,并吊销其全部 refresh token。
 - 会话确认页「使用其他账号」(`/authorize/switch`)只销毁当前 SSO 会话、**不吊销 refresh token**,不影响该账号在其他业务系统的登录态。
+- 个人页「退出登录」(`/profile/logout`)与登出(`/logout`)语义相同;个人页「使用其他账号」(`/profile/switch`)与会话确认页「使用其他账号」语义相同(302 回导航首页)。
 - 修改密码成功后,会立即吊销该用户的全部 refresh token,并销毁其它端的 SSO 会话;**当前会话保留**,不影响本次操作。
 - 但**已签发的 access_token / id_token 在过期前仍然有效**(默认 10 分钟)。因为资源服务是**离线验签** JWT,不回调 SSO,SSO 无法收回已发出的令牌。
 - 每个客户端自身的本地会话另按其 TTL 到期:agent / rag / market / router 默认 12 小时;dashboard 通过 12 小时的 refresh 续期。
@@ -161,17 +162,19 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 | `/logout` | GET | 销毁会话并吊销该用户 refresh token,可跳回已登记的 `post_logout_redirect_uri` |
 | `/profile` | GET | 账号设置页(需已登录);扫码后 10 分钟内可免当前密码激活 |
 | `/profile/password` | POST | 设置/修改密码,成功后吊销该用户 refresh token 与其它端会话 |
+| `/profile/logout` | POST | 个人页「退出登录」:与 `/logout` 同语义(销毁 SSO 会话 + 清 Cookie + 吊销该账号 refresh token),渲染退出页 |
+| `/profile/switch` | POST | 个人页「使用其他账号」:仅销毁 SSO 会话(不吊销 refresh token,不影响该账号其他业务系统登录态),302 回导航首页 |
 | `/reset` | GET | 自助重置第一步页(输入工号发送验证码) |
 | `/reset/request` | POST | 发送重置验证码:统一文案防枚举;IP 10/h + 冷却 60s + 5/h 限流;禁用账号/无邮箱/未配置 SMTP 均静默不发信 |
-| `/reset/confirm` | POST | 校验验证码并重置密码(仅要求 ≥8 位,与 `/profile` 一致);成功后吊销该用户全部会话与 refresh token,并邮件通知 |
+| `/reset/confirm` | POST | 校验验证码并重置密码(仅要求 ≥8 位,与 `/profile` 一致);成功后吊销该用户全部会话与 refresh token,并邮件通知;**同一 IP 10 次/分钟限流,超限返回统一失败文案且不消费验证码** |
 | `/healthz` | GET | 健康检查,返回 `{"status":"ok"}` |
 
 ## 测试
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # 单元测试(99 个用例)
-npm run test:smoke  # 端到端烟测,需 test/fixtures/clients.json 与 test/data/users.json 夹具
+npm test            # 单元测试(105 个用例)
+npm run test:smoke  # 端到端烟测(133 条断言),需 test/fixtures/clients.json 与 test/data/users.json 夹具
 ```
 
-烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、会话确认页与换账号(continue/switch、`prompt=login`/`none`/`login none`)、事务一次性(同 tx 重复与并发)、CSRF 会话绑定(跨会话重放被拒)、无会话 POST 回登录页、密码激活、禁用账号扫码被拒、授权码一次性、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)、自助重置(两步表单/验证码邮件捕获/错码与密码不一致/重置后旧密码与旧 refresh token 失效/枚举防护)。
+烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、会话确认页与换账号(continue/switch、`prompt=login`/`none`/`login none`)、事务一次性(同 tx 重复与并发)、CSRF 会话绑定(跨会话重放被拒)、无会话 POST 回登录页、密码激活、禁用账号扫码被拒、授权码一次性、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)、自助重置(两步表单/验证码邮件捕获/错码与密码不一致/重置后旧密码与旧 refresh token 失效/枚举防护)、个人页退出登录与使用其他账号(撤销 refresh token 与否、跨会话 CSRF 拒绝)。

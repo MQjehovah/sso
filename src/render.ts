@@ -207,11 +207,11 @@ export function profilePage(opts: {
   </form>
   <form method="post" action="/profile/logout" style="margin-top:10px">
     <input type="hidden" name="csrf" value="${csrf}" />
-    <button class="btn primary" type="submit">退出登录</button>
+    <button class="btn" type="submit">退出登录</button>
   </form>
   <form method="post" action="/profile/switch" style="margin-top:10px">
     <input type="hidden" name="csrf" value="${csrf}" />
-    <button class="btn" type="submit">切换其他账号</button>
+    <button class="btn" type="submit">使用其他账号</button>
   </form>
   <div class="hint">密码用于"账号密码"登录通道,同样适用于其他接入统一认证的系统</div>
 </div>

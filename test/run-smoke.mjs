@@ -743,10 +743,10 @@ async function main() {
     assert('禁用账号扫码被拒(403 + 提示)', finalBody.includes('账号已禁用'))
     await fetch(`${mockBase}/__set_next_user?user=active`)
 
-    // ---- 个人页:退出登录 / 切换其他账号(POST /profile/logout | /profile/switch) ----
+    // ---- 个人页:退出登录 / 使用其他账号(POST /profile/logout | /profile/switch) ----
     // 复用既有会话:jarCur/10004(refresh 取改密后新签的 rNewBody)验证切换;jarNew/10003(grantNew)验证退出登录
     const profileHtmlCur = await (await ssoFetch(jarCur, `${SSO}/profile`)).text()
-    assert('个人页含退出登录与切换账号两个表单', profileHtmlCur.includes('action="/profile/logout"') && profileHtmlCur.includes('action="/profile/switch"') && profileHtmlCur.includes('退出登录') && profileHtmlCur.includes('切换其他账号'))
+    assert('个人页含退出登录与使用其他账号两个表单', profileHtmlCur.includes('action="/profile/logout"') && profileHtmlCur.includes('action="/profile/switch"') && profileHtmlCur.includes('退出登录') && profileHtmlCur.includes('使用其他账号'))
 
     // CSRF 缺失 → 400, 且会话保持有效
     for (const path of ['/profile/logout', '/profile/switch']) {
@@ -760,6 +760,20 @@ async function main() {
     }
     const authAfterProfileNoCsrf = await authorizeWithSid(configuration, sso_sid_cur, 'sprof-nocsrf')
     assert('个人页 CSRF 被拒后会话仍有效', authAfterProfileNoCsrf.status === 200 && authAfterProfileNoCsrf.body.includes('已登录为'))
+
+    // 跨会话 CSRF:jarCur 个人页的 csrf(绑 sid_cur)在 jarNew/10003 会话下提交必须被拒
+    const crossCsrfProfile = extractCsrf(profileHtmlCur)
+    for (const path of ['/profile/logout', '/profile/switch']) {
+      const rProfileCross = await ssoFetch(jarNew, `${SSO}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `csrf=${crossCsrfProfile}`,
+        redirect: 'manual'
+      })
+      assert(`个人页 A 的 csrf 在 B 会话下 ${path} 被拒(400)`, rProfileCross.status === 400)
+    }
+    const authAfterProfileCross = await authorizeWithSid(configuration, jarNew.cookies.get('sso_sid') ?? '', 'sprof-cross')
+    assert('个人页跨会话 CSRF 被拒后 B 会话仍有效', authAfterProfileCross.status === 200 && authAfterProfileCross.body.includes('已登录为'))
 
     // 切换其他账号:302 回导航首页, 旧 sid 失效, refresh_token 不吊销
     const csrfProfileCur = extractCsrf(profileHtmlCur)

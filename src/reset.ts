@@ -218,6 +218,7 @@ export async function confirmReset(
     return { ok: false, message: RESET_FAIL_MESSAGE }
   }
   // 确认限流先于验证码校验(也先于目录查询):挡验证码爆破;命中超限不消费码,统一失败文案不泄露原因
+  // 取舍:防刷优先,长度不符的请求同样计入配额(不享受「短密码不消耗验证码」式豁免)
   if (!deps.rateLimit(`reset:confirm:${input.ip}`, 10, 60_000)) {
     return fail(`限流:reset:confirm:${input.ip}`)
   }
