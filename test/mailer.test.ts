@@ -23,7 +23,10 @@ function cfgOf(over: Partial<MailerConfig['smtp']> = {}): MailerConfig {
 async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
   const saved: Record<string, string | undefined> = {}
   for (const k of Object.keys(vars)) saved[k] = process.env[k]
-  Object.assign(process.env, vars)
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
   try {
     await fn()
   } finally {
@@ -104,4 +107,22 @@ test('生产环境忽略 SSO_SMTP_FAKE_CAPTURE:未配置、不写文件、告警
   }
   assert.equal(existsSync(file), false)
   assert.equal(warns.filter((w) => w.includes('SSO_SMTP_FAKE_CAPTURE')).length, 1)
+})
+
+test('APP_ENV=production/prod(大小写不敏感、去空格)同样视为生产:忽略 FAKE_CAPTURE', async () => {
+  const origWarn = console.warn
+  console.warn = () => {}
+  try {
+    for (const [i, appEnv] of ['production', ' PROD '].entries()) {
+      const file = join(dir, `appenv-capture-${i}.jsonl`)
+      await withEnv({ NODE_ENV: undefined, APP_ENV: appEnv, SSO_SMTP_FAKE_CAPTURE: file }, async () => {
+        const mailer = createMailer({ cfg: EMPTY_CFG })
+        assert.equal(mailer.isConfigured(), false)
+        await assert.rejects(() => mailer.sendVerificationCode({ to: 'x@corp.com', code: '000000', ttlMinutes: 10 }), /邮件服务未配置/)
+      })
+      assert.equal(existsSync(file), false)
+    }
+  } finally {
+    console.warn = origWarn
+  }
 })

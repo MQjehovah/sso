@@ -36,30 +36,73 @@ export function loginPage(opts: {
   csrf: string
   clientName?: string
   error?: string
+  /** 成功提示(如重置密码完成);与 error 同风格,绿色块 */
+  notice?: string
   dingtalkEnabled?: boolean
 }): string {
-  const { txId, tab, csrf, clientName, error, dingtalkEnabled = true } = opts
+  const { txId, tab, csrf, clientName, error, notice, dingtalkEnabled = true } = opts
   const err = error ? `<div class="err">${escapeHtml(error)}</div>` : ''
+  const ok = notice ? `<div class="err" style="background:#1b2b1e;border-color:#2a5a32;color:#8fd19a">${escapeHtml(notice)}</div>` : ''
+  // txId 为空=重置完成后的回执页:没有登录事务,不渲染标签页与登录表单,避免死链/无效提交
+  const hasTx = !!txId
+  const tabs = hasTx
+    ? `<div class="tabs">
+    ${dingtalkEnabled ? `<a href="/login?tx=${txId}&tab=qr" class="${tab === 'qr' ? 'on' : ''}">钉钉扫码</a>` : ''}
+    <a href="/login?tx=${txId}&tab=pwd" class="${tab === 'pwd' || !dingtalkEnabled ? 'on' : ''}">账号密码</a>
+  </div>`
+    : ''
+  const panel = !hasTx
+    ? `<div class="hint" style="margin:0">请返回业务系统重新发起登录</div>`
+    : tab === 'qr' && dingtalkEnabled
+      ? `<a class="btn primary" href="/dingtalk/start?tx=${txId}">打开钉钉扫码</a>`
+      : `${err}<form method="post" action="/login/password">
+        <input type="hidden" name="tx" value="${txId}" />
+        <input type="hidden" name="csrf" value="${csrf}" />
+        <label>工号或手机号</label><input name="username" autocomplete="username" required />
+        <label>密码</label><input name="password" type="password" autocomplete="current-password" required />
+        <label></label><button class="btn primary" type="submit">登 录</button>
+      </form>
+      <div class="hint" style="margin-top:12px"><a href="/reset" style="color:#409eff;text-decoration:none">忘记密码?</a></div>`
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>统一登录</title>
 <style>${BASE_STYLE}</style></head><body>
 <div class="card">
   <div class="logo">${LOGO_SVG}</div>
   <h1>统一身份登录</h1>
   <div class="sub">${clientName ? escapeHtml(clientName) + ' · ' : ''}使用公司统一账号继续</div>
-  <div class="tabs">
-    ${dingtalkEnabled ? `<a href="/login?tx=${txId}&tab=qr" class="${tab === 'qr' ? 'on' : ''}">钉钉扫码</a>` : ''}
-    <a href="/login?tx=${txId}&tab=pwd" class="${tab === 'pwd' || !dingtalkEnabled ? 'on' : ''}">账号密码</a>
-  </div>
-  ${tab === 'qr' && dingtalkEnabled
-    ? `<a class="btn primary" href="/dingtalk/start?tx=${txId}">打开钉钉扫码</a>`
-    : `${err}<form method="post" action="/login/password">
-        <input type="hidden" name="tx" value="${txId}" />
-        <input type="hidden" name="csrf" value="${csrf}" />
-        <label>工号或手机号</label><input name="username" autocomplete="username" required />
-        <label>密码</label><input name="password" type="password" autocomplete="current-password" required />
-        <label></label><button class="btn primary" type="submit">登 录</button>
-      </form>`}
+  ${tabs}
+  ${ok}
+  ${panel}
   <div class="hint">登录即代表同意公司信息安全规范 · 凭据仅用于身份验证</div>
+</div>
+</body></html>`
+}
+
+/** 自助重置页:step1 工号 → 发码;step2 验证码 + 新密码。无会话/事务,不走 CSRF token 机制 */
+export function resetPage(opts: { step: 1 | 2; sub?: string; notice?: string; error?: string }): string {
+  const { step, sub, notice, error } = opts
+  const err = error ? `<div class="err">${escapeHtml(error)}</div>` : ''
+  const ok = notice ? `<div class="err" style="background:#1b2b1e;border-color:#2a5a32;color:#8fd19a">${escapeHtml(notice)}</div>` : ''
+  const form = step === 1
+    ? `<form method="post" action="/reset/request">
+        <label>工号或手机号</label><input name="sub" autocomplete="username" required />
+        <label></label><button class="btn primary" type="submit">发送验证码</button>
+      </form>`
+    : `<form method="post" action="/reset/confirm">
+        <input type="hidden" name="sub" value="${escapeHtml(sub ?? '')}" />
+        <label>邮箱验证码</label><input name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required />
+        <label>新密码(至少 8 位)</label><input name="new_password" type="password" minlength="8" maxlength="64" required />
+        <label>确认新密码</label><input name="confirm" type="password" minlength="8" maxlength="64" required />
+        <label></label><button class="btn primary" type="submit">重置密码</button>
+      </form>`
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>重置登录密码</title>
+<style>${BASE_STYLE}</style></head><body>
+<div class="card">
+  <div class="logo">${LOGO_SVG}</div>
+  <h1>重置登录密码</h1>
+  <div class="sub">${step === 1 ? '输入工号, 验证码将发送至企业邮箱' : '输入邮箱收到的验证码并设置新密码'}</div>
+  ${ok}${err}
+  ${form}
+  <div class="hint"><a href="/" style="color:#409eff;text-decoration:none">返回首页</a></div>
 </div>
 </body></html>`
 }

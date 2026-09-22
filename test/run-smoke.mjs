@@ -699,6 +699,100 @@ async function main() {
       rmSync(ttlKeysDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
 
+    // ---- 自助重置密码:GET /reset 两步表单 + 邮件验证码 + 重置后新密码生效 ----
+    // 用独立第三实例:主实例的密码登录限流(每 IP 10 次/分钟)已被既有用例占用 9 次,
+    // 本段还需 2 次 /login/password;新实例限流窗口干净,且共享同一文件目录 users.json
+    const RESET_PORT = 18093
+    const RESET = `http://127.0.0.1:${RESET_PORT}`
+    // 文案与 src/reset.ts 保持一致(本脚本为 .mjs,无法 import TS 常量)
+    const RESET_REQUEST_MESSAGE = '若该工号存在, 验证码已发送至其企业邮箱'
+    const RESET_FAIL_MESSAGE = '验证码无效或已过期, 请重新获取'
+    const resetDataDir = new URL('./data-reset', import.meta.url)
+    const resetKeysDir = new URL('./keys-reset', import.meta.url)
+    rmSync(resetDataDir, { recursive: true, force: true })
+    rmSync(resetKeysDir, { recursive: true, force: true })
+    mkdirSync(resetDataDir, { recursive: true })
+    const sso3 = spawnAndWait('node', ['--experimental-strip-types', 'src/index.ts'], {
+      SSO_PORT: String(RESET_PORT),
+      SSO_ISSUER: RESET,
+      SSO_DATA_DIR: 'test/data-reset',
+      SSO_KEYS_DIR: 'test/keys-reset',
+      SSO_CLIENTS_PATH: 'test/fixtures/clients.json',
+      FILE_USERS_PATH: 'test/data/users.json',
+      // 验证码邮件写入文件而非真实 SMTP
+      SSO_SMTP_FAKE_CAPTURE: 'test/data-reset/smtp-capture.jsonl'
+    })
+    try {
+      assert('重置实例健康检查', await waitHealth(`${RESET}/healthz`))
+      const captureFile = new URL('./data-reset/smtp-capture.jsonl', import.meta.url)
+      const captureMails = () => {
+        try {
+          return readFileSync(captureFile, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+        } catch {
+          return []
+        }
+      }
+      const postForm = (path, body) => fetch(`${RESET}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body
+      })
+
+      const rResetPage = await fetch(`${RESET}/reset`)
+      const resetPageHtml = await rResetPage.text()
+      assert('GET /reset 返回 200 且含第一步表单', rResetPage.status === 200 && resetPageHtml.includes('action="/reset/request"') && resetPageHtml.includes('name="sub"'))
+
+      const rResetReq = await postForm('/reset/request', 'sub=10001')
+      const resetReqHtml = await rResetReq.text()
+      assert('重置请求 200:渲染 step2 并显示统一文案', rResetReq.status === 200 && resetReqHtml.includes('action="/reset/confirm"') && resetReqHtml.includes(RESET_REQUEST_MESSAGE))
+      const mails1 = captureMails()
+      assert('捕获文件新增一封验证码邮件', mails1.length === 1)
+      const resetMail = mails1[0] ?? {}
+      const codeMatch = String(resetMail.text ?? '').match(/验证码为:(\d{6})/)
+      assert('验证码邮件收件人与 6 位码正确', resetMail.to === 'zhangsan@xzrobot.com' && !!codeMatch)
+      const resetCode = codeMatch?.[1] ?? ''
+
+      const wrongCode = resetCode === '000000' ? '000001' : '000000'
+      const rWrongCode = await postForm('/reset/confirm', `sub=10001&code=${wrongCode}&new_password=newpass789&confirm=newpass789`)
+      assert('错码 → 统一失败文案', (await rWrongCode.text()).includes(RESET_FAIL_MESSAGE))
+
+      const rPwdMismatch = await postForm('/reset/confirm', `sub=10001&code=${resetCode}&new_password=newpass789&confirm=newpass790`)
+      assert('两次密码不一致 → 提示且验证码未被消费', (await rPwdMismatch.text()).includes('两次输入的密码不一致'))
+
+      const rResetOk = await postForm('/reset/confirm', `sub=10001&code=${resetCode}&new_password=newpass789&confirm=newpass789`)
+      assert('正确码重置成功(回执含成功提示)', rResetOk.status === 200 && (await rResetOk.text()).includes('密码已重置'))
+
+      const tryPasswordLogin = async (password, state) => {
+        const jar = new Jar()
+        const au = `${RESET}/authorize?client_id=test-web&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=openid&state=${state}&nonce=${state}`
+        const r1 = await ssoFetch(jar, au, { redirect: 'manual' })
+        const tx = new URL(r1.headers.get('location'), RESET).searchParams.get('tx')
+        const csrf = await csrfForLogin(jar, RESET, tx)
+        const r2 = await ssoFetch(jar, `${RESET}/login/password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `tx=${tx}&username=10001&password=${password}&csrf=${csrf}`,
+          redirect: 'manual'
+        })
+        return { status: r2.status, location: r2.headers.get('location') ?? '' }
+      }
+      const oldPwdLogin = await tryPasswordLogin('pass123', 'sreset-old')
+      assert('重置后旧密码登录失败', oldPwdLogin.status === 302 && oldPwdLogin.location.includes('error='))
+      const newPwdLogin = await tryPasswordLogin('newpass789', 'sreset-new')
+      assert('重置后新密码登录成功(302 携带 code)', newPwdLogin.status === 302 && newPwdLogin.location.startsWith(REDIRECT_URI) && newPwdLogin.location.includes('code='))
+
+      const mailsBeforeProbe = captureMails().length
+      const rGhost = await postForm('/reset/request', 'sub=19999')
+      assert('不存在工号 → 统一文案', (await rGhost.text()).includes(RESET_REQUEST_MESSAGE))
+      const rNoEmail = await postForm('/reset/request', 'sub=10003')
+      assert('无邮箱用户 → 统一文案', (await rNoEmail.text()).includes(RESET_REQUEST_MESSAGE))
+      assert('不存在工号/无邮箱用户均不触发发信', captureMails().length === mailsBeforeProbe)
+    } finally {
+      sso3.kill()
+      rmSync(resetDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      rmSync(resetKeysDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+
     console.log(`\n结果:${passed} 通过,${failed} 失败`)
     if (failed > 0) process.exit(1)
   } finally {

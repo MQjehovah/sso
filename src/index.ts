@@ -5,7 +5,8 @@ import {
   handleAuthorize, handleDiscovery, handleDingtalkCallback, handleDingtalkStart,
   handleHome,
   handleJwks, handleLoginPage, handleLogout, handlePasswordLogin,
-  handleProfile, handleProfilePassword, handleToken, handleUserinfo
+  handleProfile, handleProfilePassword, handleResetConfirm, handleResetPage, handleResetRequest,
+  handleToken, handleUserinfo
 } from './protocol.ts'
 import { HttpError } from './errors.ts'
 
@@ -40,6 +41,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (path === '/logout') return handleLogout(req, res, url)
   if (path === '/profile') return handleProfile(req, res)
   if (path === '/profile/password' && req.method === 'POST') return handleProfilePassword(req, res)
+  if (path === '/reset' && req.method === 'GET') return handleResetPage(res)
+  if (path === '/reset/request' && req.method === 'POST') return handleResetRequest(req, res)
+  if (path === '/reset/confirm' && req.method === 'POST') return handleResetConfirm(req, res)
 
   html(res, 404, 'Not Found')
 }

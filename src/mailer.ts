@@ -20,6 +20,13 @@ export type SendMailMessage = { from: string; to: string; subject: string; text:
 /** 仅需 smtp 段,便于测试注入字面量(生产直接传 config) */
 export type MailerConfig = Pick<typeof config, 'smtp'>
 
+/** 生产环境判定:NODE_ENV=production 或 APP_ENV∈{production, prod}(大小写不敏感、忽略首尾空格) */
+function isProductionEnv(): boolean {
+  const nodeEnv = (process.env.NODE_ENV ?? '').trim().toLowerCase()
+  const appEnv = (process.env.APP_ENV ?? '').trim().toLowerCase()
+  return nodeEnv === 'production' || appEnv === 'production' || appEnv === 'prod'
+}
+
 export function createMailer(deps?: { cfg?: MailerConfig; sendMailImpl?: (msg: SendMailMessage) => Promise<unknown> }): Mailer {
   let transport: Transporter | null = null
   let warnedFakeCaptureInProd = false
@@ -29,7 +36,7 @@ export function createMailer(deps?: { cfg?: MailerConfig; sendMailImpl?: (msg: S
   function captureFile(): string {
     const file = (process.env.SSO_SMTP_FAKE_CAPTURE ?? '').trim()
     if (!file) return ''
-    if ((process.env.NODE_ENV ?? '').trim().toLowerCase() === 'production') {
+    if (isProductionEnv()) {
       if (!warnedFakeCaptureInProd) {
         warnedFakeCaptureInProd = true
         console.warn('[sso] 检测到 SSO_SMTP_FAKE_CAPTURE, 生产环境已忽略(该变量仅用于测试)')

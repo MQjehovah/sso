@@ -1,7 +1,9 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.ts'
+import type { DirectoryUser } from './directory.ts'
+import type { Mailer } from './mailer.ts'
 
 /**
  * 自助重置验证码存储(JSON 落盘,风格同 store.ts):
@@ -121,4 +123,115 @@ export function createResetCodeStore(dir: string, opts?: { now?: () => number; t
       return rec
     }
   }
+}
+
+/**
+ * 请求/确认编排(依赖注入,路由装配真实实现,单测注入假实现)。
+ * 对外一律返回统一文案,不泄露工号是否存在、邮箱是否配置、是否限流。
+ */
+export interface ResetDeps {
+  directory: { findByIdentifier(id: string): Promise<DirectoryUser | null> }
+  mailer: Mailer
+  codes: ReturnType<typeof createResetCodeStore>
+  password: { setPassword(user: DirectoryUser, currentPassword: string | null, newPassword: string): Promise<void> }
+  rateLimit: (key: string, limit: number, windowMs: number) => boolean
+  /** 重置成功后作废该用户全部会话与 refresh token(默认接 store 实现,测试注入假实现) */
+  revokeSessions(sub: string): void
+  revokeTokens(sub: string): void
+  audit(evt: { event: string; ok: boolean; sub?: string; ip?: string; detail?: string }): void
+  now?: () => number
+}
+
+/** 统一文案(不泄露账号存在性) */
+export const RESET_REQUEST_MESSAGE = '若该工号存在, 验证码已发送至其企业邮箱'
+export const RESET_FAIL_MESSAGE = '验证码无效或已过期, 请重新获取'
+
+/** 请求重置:限流 → 查目录 → 有邮箱且邮件已配置才生成码并发送;任何分支都返回统一文案 */
+export async function requestReset(input: { sub: string; ip: string }, deps: ResetDeps): Promise<{ message: string }> {
+  const sub = input.sub.trim()
+  const ip = input.ip
+  const deny = (detail: string): { message: string } => {
+    deps.audit({ event: 'reset_request', ok: false, sub: sub || undefined, ip, detail })
+    return { message: RESET_REQUEST_MESSAGE }
+  }
+  if (!sub) return deny('工号为空')
+  // 冷却与小时配额必须用不同 key:滑动窗口实现按当前窗口裁剪同一 key 的时间戳,
+  // 同 key 的 60s 调用会把 1h 历史裁掉,导致小时上限永不触发
+  const limits = [
+    { key: `reset:send:${sub}`, limit: 1, windowMs: 60_000 },
+    { key: `reset:send:h:${sub}`, limit: 5, windowMs: 3_600_000 },
+    { key: `reset:ip:${ip}`, limit: 10, windowMs: 3_600_000 }
+  ]
+  for (const l of limits) {
+    if (!deps.rateLimit(l.key, l.limit, l.windowMs)) return deny(`限流:${l.key}`)
+  }
+
+  const user = await deps.directory.findByIdentifier(sub)
+  let sent = false
+  let reason = '目录中无此工号'
+  if (user && !user.email) {
+    reason = '用户未登记企业邮箱'
+  } else if (user && !deps.mailer.isConfigured()) {
+    reason = '邮件服务未配置'
+  } else if (user?.email) {
+    const code = String(randomInt(0, 1_000_000)).padStart(6, '0')
+    deps.codes.issue(sub, user.email, code, ip)
+    try {
+      await deps.mailer.sendVerificationCode({
+        to: user.email,
+        code,
+        ttlMinutes: Math.max(1, Math.round(config.resetCodeTtlSeconds / 60))
+      })
+      sent = true
+      reason = '已发送'
+    } catch (err) {
+      reason = `发送失败: ${(err as Error).message}`
+    }
+  }
+  deps.audit({ event: 'reset_request', ok: true, sub, ip, detail: JSON.stringify({ sent, reason }) })
+  return { message: RESET_REQUEST_MESSAGE }
+}
+
+/** 确认重置:校验密码长度 → 消费验证码 → 查目录 → 写密码 → 踢会话/token → 变更通知(best-effort) */
+export async function confirmReset(
+  input: { sub: string; code: string; newPassword: string; ip: string },
+  deps: ResetDeps
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const sub = input.sub.trim()
+  const fail = (detail: string): { ok: false; message: string } => {
+    deps.audit({ event: 'reset_confirm', ok: false, sub: sub || undefined, ip: input.ip, detail })
+    return { ok: false, message: RESET_FAIL_MESSAGE }
+  }
+  // 密码长度不符时不消费验证码,允许用户改正后重试
+  if (input.newPassword.length < 8 || input.newPassword.length > 64) return fail('新密码长度不符(需 8-64 位)')
+
+  const result = deps.codes.verifyAndConsume(sub, input.code)
+  if (result !== 'ok') return fail(`验证码校验失败(${result})`)
+
+  const user = await deps.directory.findByIdentifier(sub)
+  if (!user) return fail('目录中无此工号')
+  try {
+    await deps.password.setPassword(user, null, input.newPassword)
+  } catch (err) {
+    return fail(`设置密码失败: ${(err as Error).message}`)
+  }
+
+  deps.revokeSessions(sub)
+  deps.revokeTokens(sub)
+  let noticeError: string | undefined
+  if (user.email) {
+    try {
+      await deps.mailer.sendPasswordChangedNotice({ to: user.email })
+    } catch (err) {
+      noticeError = (err as Error).message
+    }
+  }
+  deps.audit({
+    event: 'reset_confirm',
+    ok: true,
+    sub,
+    ip: input.ip,
+    detail: noticeError ? `变更通知发送失败: ${noticeError}` : undefined
+  })
+  return { ok: true }
 }

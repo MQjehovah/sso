@@ -13,13 +13,27 @@ import {
 } from './store.ts'
 import { createDirectory } from './directory.ts'
 import { createPasswordVerifier } from './password.ts'
+import { createMailer } from './mailer.ts'
+import { createResetCodeStore, requestReset, confirmReset, type ResetDeps } from './reset.ts'
 import { buildScanUrl, newDingtalkState, exchangeIdentity } from './dingtalk.ts'
 import { config as cfgAll } from './config.ts'
-import { homePage, loginPage, messagePage, profilePage } from './render.ts'
+import { homePage, loginPage, messagePage, profilePage, resetPage } from './render.ts'
 import { issueCsrf, verifyCsrf } from './csrf.ts'
 
 const directory = createDirectory()
 const verifier = createPasswordVerifier()
+
+/** 自助重置依赖装配(模块级单例,风格同 directory/verifier) */
+const resetDeps: ResetDeps = {
+  directory,
+  mailer: createMailer(),
+  codes: createResetCodeStore(config.dataDir),
+  password: verifier,
+  rateLimit: (key, limit, windowMs) => rateLimit(key, limit, windowMs),
+  revokeSessions: (sub) => { destroySessionsForSub(sub) },
+  revokeTokens: (sub) => { revokeRefreshTokens(sub) },
+  audit
+}
 
 /** 钉钉 state → 登录事务(防回调伪造) */
 const dingtalkStates = new Map<string, { txId: string; created_at: number }>()
@@ -527,6 +541,37 @@ export async function handleProfilePassword(req: import('node:http').IncomingMes
     audit({ event: 'password_set', ok: false, sub: session.sub, detail: (err as Error).message })
     back((err as Error).message)
   }
+}
+
+// ---- 自助重置密码(无登录态) ----
+
+export async function handleResetPage(res: import('node:http').ServerResponse): Promise<void> {
+  html(res, 200, resetPage({ step: 1 }))
+}
+
+export async function handleResetRequest(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const ip = clientIp(req)
+  const form = formToObject(await readBody(req))
+  const sub = (form.sub ?? '').trim()
+  const { message } = await requestReset({ sub, ip }, resetDeps)
+  // 无论工号是否存在/是否限流,一律进入 step2 并展示统一文案(防枚举)
+  html(res, 200, resetPage({ step: 2, sub, notice: message }))
+}
+
+export async function handleResetConfirm(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const ip = clientIp(req)
+  const form = formToObject(await readBody(req))
+  const sub = (form.sub ?? '').trim()
+  const newPassword = form.new_password ?? ''
+  if (newPassword !== (form.confirm ?? '')) {
+    return html(res, 200, resetPage({ step: 2, sub, error: '两次输入的密码不一致' }))
+  }
+  const result = await confirmReset({ sub, code: (form.code ?? '').trim(), newPassword, ip }, resetDeps)
+  if (!result.ok) {
+    return html(res, 200, resetPage({ step: 2, sub, error: result.message }))
+  }
+  // 成功:验证码已在 confirmReset 内消费;渲染登录回执页提示改用新密码
+  html(res, 200, loginPage({ txId: '', tab: 'pwd', csrf: '', notice: '密码已重置, 请使用新密码重新登录' }))
 }
 
 // ---- 工具 ----
