@@ -40,7 +40,7 @@ function setupFixtures() {
   rmSync(new URL('./keys', import.meta.url), { recursive: true, force: true })
   mkdirSync(new URL('./data', import.meta.url), { recursive: true })
   const users = [
-    { sub: '10001', name: '张三', dept: '平台组', mobile: '13800000001', dingtalkUserId: '10001', status: 'active', passwordHash: hashPassword('pass123') },
+    { sub: '10001', name: '张三', dept: '平台组', mobile: '13800000001', email: 'zhangsan@xzrobot.com', dingtalkUserId: '10001', status: 'active', passwordHash: hashPassword('pass123') },
     { sub: '10002', name: '李四', dept: '业务组', mobile: '13800000002', dingtalkUserId: '10002', status: 'disabled' },
     { sub: '10003', name: '王五', dept: '平台组', mobile: '13800000003', dingtalkUserId: '10003', status: 'active' },
     // 无钉钉号的用户:验证 dingtalk claim 空值时不下发
@@ -610,6 +610,7 @@ async function main() {
     assert('交换所得 JWT aud=router / sub=工号 / act=dashboard-gateway', exClaims.aud === 'router' && exClaims.sub === '10001' && exClaims.act === 'dashboard-gateway')
     assert('交换所得 JWT 继承身份 claims(name/dept/roles)', exClaims.name === '张三' && exClaims.dept === '平台组' && JSON.stringify(exClaims.roles) === JSON.stringify(['user']))
     assert('交换所得 JWT 继承 dingtalk claim(与目录一致)', exClaims.dingtalk === '10001')
+    assert('交换所得 JWT 继承 email claim(与目录一致)', exClaims.email === 'zhangsan@xzrobot.com')
     assert('token 交换响应 expires_in=3600', exBody.expires_in === 3600)
     assert('交换所得 JWT TTL 为 3600 秒', exClaims.exp - exClaims.iat === 3600)
 
@@ -624,6 +625,11 @@ async function main() {
     const exTampered = await exchange({ subject_token: tampered, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
     const exTamperedBody = await exTampered.json()
     assert('篡改 subject_token(未重签名) → 400 invalid_grant', exTampered.status === 400 && exTamperedBody.error === 'invalid_grant' && exTamperedBody.error_description === 'subject_token 无效或已过期')
+
+    // 畸形 subject_token(无法解码):同样应拒绝
+    const exMalformed = await exchange({ subject_token: 'not-a-jwt', subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
+    const exMalformedBody = await exMalformed.json()
+    assert('畸形 subject_token → 400 invalid_grant', exMalformed.status === 400 && exMalformedBody.error === 'invalid_grant')
 
     // subject_token 受众不符(用 test-web 的 id_token,aud=test-web 而非 dashboard-gateway)
     const exWrongSub = await exchange({ subject_token: grant1.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
@@ -649,7 +655,8 @@ async function main() {
       SSO_CLIENTS_PATH: 'test/fixtures/clients.json',
       FILE_USERS_PATH: 'test/data/users.json',
       SSO_ACCESS_TOKEN_TTL_SECONDS: '60',
-      SSO_ID_TOKEN_TTL_SECONDS: '120'
+      SSO_ID_TOKEN_TTL_SECONDS: '120',
+      SSO_EXCHANGE_TTL: 'abc'
     })
     try {
       assert('TTL 覆盖实例健康检查', await waitHealth(`${sso2Base}/healthz`))
@@ -659,6 +666,17 @@ async function main() {
       assert('SSO_ACCESS_TOKEN_TTL_SECONDS=60 生效', ttlAt.exp - ttlAt.iat === 60)
       assert('SSO_ID_TOKEN_TTL_SECONDS=120 生效', ttlId.exp - ttlId.iat === 120)
       assert('TTL 覆盖实例 expires_in 为 60', ttlBody.expires_in === 60)
+
+      // SSO_EXCHANGE_TTL 非法值(abc)应回退 3600,而非 NaN→永不过期
+      const ttlDg = await passwordCodeGrant(sso2Base, '10001', 'pass123', 'dashboard-gateway', 'e2e-gateway-secret', DG_REDIRECT_URI)
+      const ttlExRes = await fetch(`${sso2Base}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ grant_type: EXCHANGE_GRANT, subject_token: ttlDg.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
+      })
+      const ttlExBody = await ttlExRes.json()
+      const ttlExClaims = typeof ttlExBody.access_token === 'string' ? decodeJwt(ttlExBody.access_token) : {}
+      assert('SSO_EXCHANGE_TTL=abc 非法值回退 3600', ttlExRes.status === 200 && ttlExBody.expires_in === 3600 && ttlExClaims.exp - ttlExClaims.iat === 3600)
     } finally {
       sso2.kill()
       rmSync(ttlDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
