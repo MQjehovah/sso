@@ -136,6 +136,7 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 需要明确的是:本服务的吊销是**收敛窗口**,不是瞬时失效。
 
 - 登出(`/logout`)会立即销毁该用户的 SSO 会话,并吊销其全部 refresh token。
+- 会话确认页「使用其他账号」(`/authorize/switch`)只销毁当前 SSO 会话、**不吊销 refresh token**,不影响该账号在其他业务系统的登录态。
 - 修改密码成功后,会立即吊销该用户的全部 refresh token,并销毁其它端的 SSO 会话;**当前会话保留**,不影响本次操作。
 - 但**已签发的 access_token / id_token 在过期前仍然有效**(默认 10 分钟)。因为资源服务是**离线验签** JWT,不回调 SSO,SSO 无法收回已发出的令牌。
 - 每个客户端自身的本地会话另按其 TTL 到期:agent / rag / market / router 默认 12 小时;dashboard 通过 12 小时的 refresh 续期。
@@ -148,7 +149,9 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 |---|---|---|
 | `/.well-known/openid-configuration` | GET | OIDC discovery 元数据 |
 | `/.well-known/jwks.json` | GET | 发布 active + verifying 公钥(RS256) |
-| `/authorize` | GET | 授权入口;校验 client 与 redirect_uri,已登录则直接发 code,否则跳登录页。**提供 `code_challenge` 时必须 `code_challenge_method=S256`** |
+| `/authorize` | GET | 授权入口;校验 client 与 redirect_uri。**有会话时渲染会话确认页(可换账号)**,`prompt=login` 强制重新登录,`prompt=none` 无 UI(有会话静默发码,否则回 `error=login_required`)。**提供 `code_challenge` 时必须 `code_challenge_method=S256`** |
+| `/authorize/continue` | POST | 会话确认页「继续以该账号登录」:校验 tx 与 `sid:tx` 绑定的 CSRF 后签发 code;事务一次性(同 tx 重复/并发第二次 400) |
+| `/authorize/switch` | POST | 会话确认页「使用其他账号」:校验同上后仅销毁 SSO 会话(不吊销 refresh token),302 回登录页 |
 | `/login` | GET | 登录页(扫码 / 账号密码双通道) |
 | `/login/password` | POST | 账号密码登录(LDAP / 文件目录),成功后发 code |
 | `/dingtalk/start` | GET | 跳转钉钉扫码授权页;未配置扫码时返回友好提示 |
@@ -167,8 +170,8 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # 单元测试(93 个用例)
+npm test            # 单元测试(99 个用例)
 npm run test:smoke  # 端到端烟测,需 test/fixtures/clients.json 与 test/data/users.json 夹具
 ```
 
-烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、密码激活、禁用账号扫码被拒、授权码一次性、单点登录、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)、自助重置(两步表单/验证码邮件捕获/错码与密码不一致/重置后旧密码与旧 refresh token 失效/枚举防护)。
+烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、会话确认页与换账号(continue/switch、`prompt=login`/`none`/`login none`)、事务一次性(同 tx 重复与并发)、CSRF 会话绑定(跨会话重放被拒)、无会话 POST 回登录页、密码激活、禁用账号扫码被拒、授权码一次性、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)、自助重置(两步表单/验证码邮件捕获/错码与密码不一致/重置后旧密码与旧 refresh token 失效/枚举防护)。

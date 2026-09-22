@@ -43,3 +43,10 @@ test('会话确认页对 name/sub/dept/clientName 做 HTML 转义(防 XSS)', () 
   assert.ok(html.includes('&lt;svg onload=alert(3)&gt;'))
   assert.ok(html.includes('&lt;b&gt;零号员工&lt;/b&gt;'))
 })
+
+test('会话确认页对 txId/csrf 做 HTML 转义', () => {
+  const html = sessionConfirmPage({ ...base, txId: 'tx<&"\'>', csrf: 'c<&"\'>' })
+  assert.ok(html.includes('name="tx" value="tx&lt;&amp;&quot;&#39;&gt;"'), 'txId 必须转义后写入 hidden')
+  assert.ok(html.includes('name="csrf" value="c&lt;&amp;&quot;&#39;&gt;"'), 'csrf 必须转义后写入 hidden')
+  assert.ok(!html.includes('value="tx<'), '不得输出未转义的 txId')
+})

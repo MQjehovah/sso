@@ -22,7 +22,9 @@
 ## 设计
 
 **`/authorize`**（`handleAuthorize`）：
-- 有会话 且 `prompt=login` → 跳过确认页，302 `/login?tx=<id>&tab=qr`（标准语义，客户端可强制重登）
+- 有会话 且 `prompt` 含 `login` → 跳过确认页，302 `/login?tx=<id>&tab=qr`（标准语义，客户端可强制重登）
+- `prompt` 含 `none` → 无 UI：有会话直接静默 `issueCodeRedirect`，无会话 302 回
+  `redirect_uri` 并带 `error=login_required` 与 `state`（含 `none` 与其它值时 `none` 优先）
 - 有会话 → 渲染**会话确认页**（不再静默发码）
 - 无会话 → 现状不变（302 登录页）
 
@@ -45,8 +47,9 @@
 refresh token**（只退出 SSO 会话，不影响该账号在其他业务系统的登录态）；审计
 `event: 'session_switch'`（含 `sub`/`ip`）。
 
-**失败路径**：tx 缺失/过期 → `messagePage('登录请求已过期', ...)`（同登录页现有文案）；
-CSRF 失败 → 400「请求已过期，请重新打开登录页」。
+**失败路径**：tx 缺失/过期 → 400 `messagePage('登录事务已过期', ...)`；CSRF 失败 → 400
+`messagePage('登录已过期', '页面已过期,请重新打开登录页')`（与登录表单文案一致）。
+`issueCodeRedirect` 以 `finishTx` 原子认领事务，认领失败同样按事务过期 400。
 
 **兼容**：无会话流程、钉钉扫码、密码登录、`/reset`、`/logout` 行为均不变；dashboard 无需改动
 （员工端退出后重新登录即见确认页，一键换号）。

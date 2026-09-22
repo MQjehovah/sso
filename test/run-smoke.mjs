@@ -492,7 +492,7 @@ async function main() {
       body: `tx=deadbeef&csrf=${csrf2}`,
       redirect: 'manual'
     })
-    assert('continue 无效事务 → 400 登录请求已过期', rContinueBadTx.status === 400 && (await rContinueBadTx.text()).includes('登录请求已过期'))
+    assert('continue 无效事务 → 400 登录事务已过期', rContinueBadTx.status === 400 && (await rContinueBadTx.text()).includes('登录事务已过期'))
 
     // 继续以该账号登录 → 302 携带 code,可正常换 token
     const rContinue = await ssoFetch(jar1, `${SSO}/authorize/continue`, {
@@ -518,7 +518,7 @@ async function main() {
       body: `tx=${tx2}&csrf=${csrf2}`,
       redirect: 'manual'
     })
-    assert('同一 tx 重复 continue → 400(事务已消费)', rContinueAgain.status === 400 && (await rContinueAgain.text()).includes('登录请求已过期'))
+    assert('同一 tx 重复 continue → 400(事务已消费)', rContinueAgain.status === 400 && (await rContinueAgain.text()).includes('登录事务已过期'))
 
     // 事务一次性(并发):同一 tx+csrf 并发 POST continue,恰一次成功
     const auConc = oidc.buildAuthorizationUrl(configuration, {
@@ -545,6 +545,28 @@ async function main() {
     const promptLoc = rPrompt.headers.get('location') ?? ''
     assert('prompt=login → 302 登录页(不渲染确认页)', rPrompt.status === 302 && promptLoc.startsWith('/login?tx=') && !(await rPrompt.text()).includes('继续以该账号登录'))
 
+    // prompt=none:有会话 → 静默发码(无 UI);无会话 → 302 回应用 error=login_required
+    const auNone = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'snn', nonce: 'nnn'
+    })
+    auNone.searchParams.set('prompt', 'none')
+    const rNone = await ssoFetch(jar1, auNone, { redirect: 'manual' })
+    const noneLoc = rNone.headers.get('location') ?? ''
+    assert('prompt=none 有会话 → 302 静默发码(带 state)', rNone.status === 302 && noneLoc.startsWith(REDIRECT_URI) && noneLoc.includes('code=') && noneLoc.includes('state=snn'))
+    const jarSilent = new Jar()
+    const rNoneAnon = await ssoFetch(jarSilent, auNone, { redirect: 'manual' })
+    const noneAnonLoc = rNoneAnon.headers.get('location') ?? ''
+    assert('prompt=none 无会话 → error=login_required(带 state,不跳登录页)', rNoneAnon.status === 302 && noneAnonLoc.startsWith(REDIRECT_URI) && noneAnonLoc.includes('error=login_required') && noneAnonLoc.includes('state=snn'))
+
+    // prompt="login none":none 优先(确定性语义,见 handleAuthorize 注释),有会话仍静默发码
+    const auBoth = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'sbn', nonce: 'nbn'
+    })
+    auBoth.searchParams.set('prompt', 'login none')
+    const rBoth = await ssoFetch(jar1, auBoth, { redirect: 'manual' })
+    const bothLoc = rBoth.headers.get('location') ?? ''
+    assert('prompt="login none" → none 优先(302 发码,非登录页)', rBoth.status === 302 && bothLoc.startsWith(REDIRECT_URI) && bothLoc.includes('code='))
+
     // CSRF 与会话绑定:账号 A(10001/jar1)确认页的 csrf 在账号 B(10004/jarCur)会话下必须被拒
     const auCross = oidc.buildAuthorizationUrl(configuration, {
       redirect_uri: REDIRECT_URI, scope: 'openid', state: 'scr', nonce: 'ncr'
@@ -565,6 +587,23 @@ async function main() {
     assert('A 的确认页 csrf 在 B 会话下 switch 被拒(400)', rCrossSwitch.status === 400)
     const authCrossB = await authorizeWithSid(configuration, sso_sid_cur, 'scr-check')
     assert('跨会话 CSRF 被拒后 B 会话未被误销毁', authCrossB.status === 200 && authCrossB.body.includes('继续以该账号登录'))
+
+    // 无会话 POST continue/switch → 先回登录页(tx 存在 → 会话缺失的校验顺序)
+    const jarNoSess = new Jar()
+    const auNoSess = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'sns', nonce: 'nns'
+    })
+    const rNoSessAuth = await ssoFetch(jarNoSess, auNoSess, { redirect: 'manual' })
+    const txNoSess = new URL(rNoSessAuth.headers.get('location') ?? '/', SSO).searchParams.get('tx') ?? ''
+    for (const path of ['/authorize/continue', '/authorize/switch']) {
+      const rNoSessPost = await ssoFetch(jarNoSess, `${SSO}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `tx=${txNoSess}`,
+        redirect: 'manual'
+      })
+      assert(`无会话 POST ${path} → 302 回登录页`, rNoSessPost.status === 302 && (rNoSessPost.headers.get('location') ?? '').startsWith(`/login?tx=${txNoSess}`))
+    }
 
     // ---- 使用其他账号:销毁 SSO 会话,但不吊销 refresh token ----
     // 用 sessCtrl(10001 的独立会话);其 refresh 已在上面跨用户隔离用例中轮换为 ctrlBody.refresh_token

@@ -165,11 +165,20 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
   }
   putTx(tx)
 
-  // 已有 SSO 会话 → 会话确认页(不再静默发码);prompt=login 可强制重新登录
+  // OIDC prompt:none=无 UI(有会话则静默发码,否则回 login_required),login=强制重新登录;
+  // 其余值当前忽略;同时含 none 与其它值时 none 优先(保持确定性)。
+  const prompts = (q.get('prompt') ?? '').split(/\s+/).filter(Boolean)
   const cookies = parseCookies(req.headers.cookie)
   const session = getSession(cookies['sso_sid'])
+  if (prompts.includes('none')) {
+    if (session) {
+      return issueCodeRedirect(res, tx, session)
+    }
+    const params = new URLSearchParams({ error: 'login_required', ...(tx.state ? { state: tx.state } : {}) })
+    return redirect(res, `${tx.redirect_uri}${tx.redirect_uri.includes('?') ? '&' : '?'}${params.toString()}`)
+  }
   if (session) {
-    if (q.get('prompt') === 'login') {
+    if (prompts.includes('login')) {
       return redirect(res, `/login?tx=${tx.id}&tab=qr`)
     }
     return html(res, 200, sessionConfirmPage({
@@ -178,32 +187,31 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
       name: session.name,
       sub: session.sub,
       dept: session.dept,
-      clientName: client?.name
+      clientName: client.name
     }))
   }
   redirect(res, `/login?tx=${tx.id}&tab=qr`)
 }
 
 /** continue/switch 共用校验:tx 存在 → 当前会话(无会话先回登录页) → CSRF(绑「sid:tx」);失败时已写响应并返回 null */
-function checkAuthorizeForm(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, form: Record<string, string>): { txId: string; tx: PendingTx; session: SsoSession } | null {
-  const txId = form.tx ?? ''
-  const tx = takeTx(txId)
+function validateAuthorizePost(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, form: Record<string, string>): { tx: PendingTx; session: SsoSession } | null {
+  const tx = takeTx(form.tx ?? '')
   if (!tx) {
-    html(res, 400, messagePage('登录请求已过期', '请返回应用重新发起登录', false))
+    html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
     return null
   }
   const cookies = parseCookies(req.headers.cookie)
   const session = getSession(cookies['sso_sid'])
   if (!session) {
-    redirect(res, `/login?tx=${txId}&tab=qr`)
+    redirect(res, `/login?tx=${tx.id}&tab=qr`)
     return null
   }
   // CSRF 与会话绑定:token 以「会话 sid + 本次事务 tx」为 seed,防跨会话/跨事务重放
-  if (!verifyCsrf(`${session.sid}:${txId}`, form.csrf)) {
-    html(res, 400, messagePage('请求已过期', '页面已过期,请重新打开登录页', false))
+  if (!verifyCsrf(`${session.sid}:${tx.id}`, form.csrf)) {
+    html(res, 400, messagePage('登录已过期', '页面已过期,请重新打开登录页', false))
     return null
   }
-  return { txId, tx, session }
+  return { tx, session }
 }
 
 /** 确认页「继续以该账号登录」:与既有静默发码路径等价,取当前会话签发 code */
@@ -213,7 +221,7 @@ export async function handleAuthorizeContinue(req: import('node:http').IncomingM
     return html(res, 429, messagePage('请求过于频繁', '请稍后再试', false))
   }
   const form = formToObject(await readBody(req))
-  const checked = checkAuthorizeForm(req, res, form)
+  const checked = validateAuthorizePost(req, res, form)
   if (!checked) return
   issueCodeRedirect(res, checked.tx, checked.session)
 }
@@ -225,18 +233,20 @@ export async function handleAuthorizeSwitch(req: import('node:http').IncomingMes
     return html(res, 429, messagePage('请求过于频繁', '请稍后再试', false))
   }
   const form = formToObject(await readBody(req))
-  const checked = checkAuthorizeForm(req, res, form)
+  const checked = validateAuthorizePost(req, res, form)
   if (!checked) return
   destroySession(checked.session.sid)
   res.setHeader('Set-Cookie', clearCookie())
-  audit({ event: 'session_switch', ok: true, sub: checked.session.sub, ip })
-  redirect(res, `/login?tx=${checked.txId}&tab=qr`)
+  audit({ event: 'session_switch', ok: true, sub: checked.session.sub, client_id: checked.tx.client_id, ip })
+  redirect(res, `/login?tx=${checked.tx.id}&tab=qr`)
 }
 
 function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingTx, session: SsoSession): void {
+  // 原子认领事务:LDAP 等异步校验窗口内并发复用同一 tx 时,只有第一个请求能签码(其余 400)
+  if (!finishTx(tx.id)) {
+    return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
+  }
   const code = issueCode(tx, session)
-  // 事务一次性:签发 code 即消费 tx,同一 tx 不能再签第二个 code(重复/并发第二次一律 400)
-  finishTx(tx.id)
   const params = new URLSearchParams({ code, ...(tx.state ? { state: tx.state } : {}) })
   // 认证完成的同一响应下发会话 Cookie(单点登录凭据)
   res.setHeader('Set-Cookie', [
