@@ -761,7 +761,7 @@ async function main() {
     const authAfterProfileNoCsrf = await authorizeWithSid(configuration, sso_sid_cur, 'sprof-nocsrf')
     assert('个人页 CSRF 被拒后会话仍有效', authAfterProfileNoCsrf.status === 200 && authAfterProfileNoCsrf.body.includes('已登录为'))
 
-    // 切换其他账号:302 /login?tab=qr, 旧 sid 失效, refresh_token 不吊销
+    // 切换其他账号:302 回导航首页, 旧 sid 失效, refresh_token 不吊销
     const csrfProfileCur = extractCsrf(profileHtmlCur)
     const rProfileSwitch = await ssoFetch(jarCur, `${SSO}/profile/switch`, {
       method: 'POST',
@@ -769,7 +769,7 @@ async function main() {
       body: `csrf=${csrfProfileCur}`,
       redirect: 'manual'
     })
-    assert('个人页切换账号 → 302 /login?tab=qr', rProfileSwitch.status === 302 && (rProfileSwitch.headers.get('location') ?? '') === '/login?tab=qr')
+    assert('个人页切换账号 → 302 回导航首页 /', rProfileSwitch.status === 302 && (rProfileSwitch.headers.get('location') ?? '') === '/')
     assert('个人页切换账号清除 sso_sid Cookie', (rProfileSwitch.headers.getSetCookie?.() ?? []).some((c) => c.startsWith('sso_sid=;')))
     const authAfterProfileSwitch = await authorizeWithSid(configuration, sso_sid_cur, 'sprof-sw')
     assert('个人页切换账号后旧 sso_sid 失效(authorize 回登录页)', authAfterProfileSwitch.status === 302 && !authAfterProfileSwitch.location.includes('code=') && authAfterProfileSwitch.location.startsWith('/login'))

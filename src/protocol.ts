@@ -640,7 +640,7 @@ export async function handleProfileLogout(req: import('node:http').IncomingMessa
   const cookies = parseCookies(req.headers.cookie)
   const session = getSession(cookies['sso_sid'])
   if (!session) {
-    return html(res, 401, messagePage('请先登录', '请先通过扫码或密码登录', false))
+    return html(res, 401, messagePage('请先登录', '设置密码前请先通过扫码或密码登录', false))
   }
   // CSRF token 与当前会话 sid 绑定(与 profilePage 渲染时一致)
   const form = formToObject(await readBody(req))
@@ -660,7 +660,7 @@ export async function handleProfileSwitch(req: import('node:http').IncomingMessa
   const cookies = parseCookies(req.headers.cookie)
   const session = getSession(cookies['sso_sid'])
   if (!session) {
-    return html(res, 401, messagePage('请先登录', '请先通过扫码或密码登录', false))
+    return html(res, 401, messagePage('请先登录', '设置密码前请先通过扫码或密码登录', false))
   }
   const form = formToObject(await readBody(req))
   if (!verifyCsrf(session.sid, form.csrf)) {
@@ -670,7 +670,8 @@ export async function handleProfileSwitch(req: import('node:http').IncomingMessa
   destroySession(session.sid)
   res.setHeader('Set-Cookie', clearCookie())
   audit({ event: 'session_switch', ok: true, sub: session.sub, ip })
-  redirect(res, '/login?tab=qr')
+  // 回导航首页(handleHome):/login 需要 tx,直接跳会 400「登录事务已过期」
+  redirect(res, '/')
 }
 
 // ---- 自助重置密码(无登录态) ----
