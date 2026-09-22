@@ -19,10 +19,12 @@
   },
   "dependencies": {
     "jose": "^6.2.11",
-    "ldapts": "^9.0.0"
+    "ldapts": "^9.0.0",
+    "nodemailer": "^10.0.10"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
+    "@types/nodemailer": "^8.0.2",
     "openid-client": "^6.8.7",
     "typescript": "^7.0.2"
   }

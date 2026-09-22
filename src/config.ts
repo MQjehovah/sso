@@ -99,6 +99,20 @@ export const config = {
   /** token-exchange 换取的 access_token 寿命(秒),默认 1 小时 */
   exchangeTtlSeconds: posIntEnv('SSO_EXCHANGE_TTL', 3600),
 
+  /** 邮件发送(SMTP,可选;未配置时自助重置降级提示,不影响启动) */
+  smtp: {
+    host: (process.env.SSO_SMTP_HOST ?? '').trim(),
+    port: posIntEnv('SSO_SMTP_PORT', 465, 1),
+    secure: (process.env.SSO_SMTP_SECURE ?? 'true').trim().toLowerCase() !== 'false',
+    username: (process.env.SSO_SMTP_USERNAME ?? '').trim(),
+    password: process.env.SSO_SMTP_PASSWORD ?? '',
+    fromName: (process.env.SSO_SMTP_FROM_NAME ?? '零号员工').trim(),
+    /** 发件地址, 默认与登录账号相同 */
+    from: (process.env.SSO_SMTP_FROM ?? '').trim()
+  },
+  /** 自助重置验证码有效期(秒), 默认 10 分钟 */
+  resetCodeTtlSeconds: posIntEnv('SSO_RESET_CODE_TTL_SECONDS', 600, 60),
+
   /** 客户端注册文件 */
   clientsPath: process.env.SSO_CLIENTS_PATH ?? './clients.json'
 }
