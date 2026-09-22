@@ -8,6 +8,7 @@
       "post_logout_redirect_uris": [],
       "default_role": "user",
       "refresh_ttl_hours": 12,
+      "allowed_audiences": ["router"],
       "dept_role_map": {
         "平台组": "admin",
         "AI-Admin": "admin"
