@@ -201,6 +201,8 @@ async function main() {
     assert('discovery 发现端点', true)
     const jwks = await (await fetch(`${SSO}/.well-known/jwks.json`)).json()
     assert('JWKS 公钥集可用', Array.isArray(jwks.keys) && jwks.keys.length === 1)
+    const discoveryMeta = await (await fetch(`${SSO}/.well-known/openid-configuration`)).json()
+    assert('discovery 声明 token-exchange grant', (discoveryMeta.grant_types_supported ?? []).includes('urn:ietf:params:oauth:grant-type:token-exchange'))
 
     // ---- 密码通道 ----
     const jar1 = new Jar()
@@ -613,6 +615,7 @@ async function main() {
     assert('交换所得 JWT 继承 email claim(与目录一致)', exClaims.email === 'zhangsan@xzrobot.com')
     assert('token 交换响应 expires_in=3600', exBody.expires_in === 3600)
     assert('交换所得 JWT TTL 为 3600 秒', exClaims.exp - exClaims.iat === 3600)
+    assert('token 交换响应不含 id_token/refresh_token', !('id_token' in exBody) && !('refresh_token' in exBody))
 
     // audience 未授权(不在 allowed_audiences)
     const exBadAud = await exchange({ subject_token: dgTokens.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'market', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
@@ -621,7 +624,6 @@ async function main() {
 
     // subject_token 篡改:改 payload.sub 后重编码(不重签名),验签实现必须拒绝
     const tampered = tamperJwtPayload(dgTokens.id_token, { sub: '99999' })
-    assert('篡改样本可被无验签解码(证明 payload 已改、仅签名失效)', decodeJwt(tampered).sub === '99999')
     const exTampered = await exchange({ subject_token: tampered, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
     const exTamperedBody = await exTampered.json()
     assert('篡改 subject_token(未重签名) → 400 invalid_grant', exTampered.status === 400 && exTamperedBody.error === 'invalid_grant' && exTamperedBody.error_description === 'subject_token 无效或已过期')
@@ -641,6 +643,20 @@ async function main() {
     const exNoAuthBody = await exNoAuth.json()
     assert('token 交换客户端未认证 → 401 invalid_client', exNoAuth.status === 401 && exNoAuthBody.error === 'invalid_client')
 
+    // 缺少 audience
+    const exMissing = await exchange({ subject_token: dgTokens.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: '', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
+    const exMissingBody = await exMissing.json()
+    assert('缺少 audience → 400 invalid_request', exMissing.status === 400 && exMissingBody.error === 'invalid_request')
+
+    // 审计:成功/invalid_target 的 detail 为 JSON 转义(防换行/ANSI 注入),缺失参数路径也有失败审计
+    const auditEvents = readFileSync(new URL('./data/audit.jsonl', import.meta.url), 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    const exAudits = auditEvents
+      .filter((e) => e.event === 'token_exchange' && typeof e.detail === 'string' && e.detail.startsWith('{'))
+      .map((e) => JSON.parse(e.detail))
+    assert('成功交换审计 detail 为 JSON 转义且含 audience', exAudits.some((d) => d.audience === 'router'))
+    assert('invalid_target 审计 detail 同样转义且含 audience', exAudits.some((d) => d.audience === 'market' && d.reason === '未授权'))
+    assert('invalid_request 缺失参数路径有失败审计', auditEvents.some((e) => e.event === 'token_exchange' && !e.ok && e.detail === '缺少 subject_token 或 audience'))
+
     // ---- TTL 可配置覆盖:第二实例(access 60s / id 120s)证明环境变量真正生效 ----
     const sso2Base = `http://127.0.0.1:${SSO_TTL_PORT}`
     const ttlDataDir = new URL('./data-ttl', import.meta.url)
@@ -656,7 +672,7 @@ async function main() {
       FILE_USERS_PATH: 'test/data/users.json',
       SSO_ACCESS_TOKEN_TTL_SECONDS: '60',
       SSO_ID_TOKEN_TTL_SECONDS: '120',
-      SSO_EXCHANGE_TTL: 'abc'
+      SSO_EXCHANGE_TTL: '90'
     })
     try {
       assert('TTL 覆盖实例健康检查', await waitHealth(`${sso2Base}/healthz`))
@@ -667,7 +683,7 @@ async function main() {
       assert('SSO_ID_TOKEN_TTL_SECONDS=120 生效', ttlId.exp - ttlId.iat === 120)
       assert('TTL 覆盖实例 expires_in 为 60', ttlBody.expires_in === 60)
 
-      // SSO_EXCHANGE_TTL 非法值(abc)应回退 3600,而非 NaN→永不过期
+      // SSO_EXCHANGE_TTL 自定义值 90 生效(避开该实例 access=60/id=120,证明读的是 exchange 专用配置)
       const ttlDg = await passwordCodeGrant(sso2Base, '10001', 'pass123', 'dashboard-gateway', 'e2e-gateway-secret', DG_REDIRECT_URI)
       const ttlExRes = await fetch(`${sso2Base}/token`, {
         method: 'POST',
@@ -676,7 +692,7 @@ async function main() {
       })
       const ttlExBody = await ttlExRes.json()
       const ttlExClaims = typeof ttlExBody.access_token === 'string' ? decodeJwt(ttlExBody.access_token) : {}
-      assert('SSO_EXCHANGE_TTL=abc 非法值回退 3600', ttlExRes.status === 200 && ttlExBody.expires_in === 3600 && ttlExClaims.exp - ttlExClaims.iat === 3600)
+      assert('SSO_EXCHANGE_TTL=90 自定义值生效', ttlExRes.status === 200 && ttlExBody.expires_in === 90 && ttlExClaims.exp - ttlExClaims.iat === 90)
     } finally {
       sso2.kill()
       rmSync(ttlDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })

@@ -61,6 +61,12 @@ export function loadClients(): Map<string, OidcClient> {
     if (typeof c.client_secret !== 'string' || c.client_secret === '') {
       throw new Error(`客户端 ${c.client_id} 的 client_secret 缺失或为空(参考 clients.example.json)`)
     }
+    // allowed_audiences 若配置必须是非空字符串数组(防止 [] 静默禁用或 [null] 意外匹配)
+    if (c.allowed_audiences !== undefined) {
+      if (!Array.isArray(c.allowed_audiences) || c.allowed_audiences.length === 0 || c.allowed_audiences.some((a) => typeof a !== 'string' || a === '')) {
+        throw new Error(`客户端 ${c.client_id} 的 allowed_audiences 必须是非空字符串数组(参考 clients.example.json)`)
+      }
+    }
     c.client_secret = expandSecret(c.client_secret)
     map.set(c.client_id, c)
   }

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { decodeProtectedHeader, jwtVerify, SignJWT } from 'jose'
+import { decodeProtectedHeader, jwtVerify, SignJWT, type JWTPayload } from 'jose'
 import { config } from './config.ts'
 import { getClient, expandRoles, refreshTtlHours } from './clients.ts'
 import { audit } from './audit.ts'
@@ -75,7 +75,7 @@ export async function handleDiscovery(res: import('node:http').ServerResponse): 
     jwks_uri: `${iss}/.well-known/jwks.json`,
     end_session_endpoint: `${iss}/logout`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code', 'refresh_token'],
+    grant_types_supported: ['authorization_code', 'refresh_token', 'urn:ietf:params:oauth:grant-type:token-exchange'],
     subject_types_supported: ['public'],
     id_token_signing_alg_values_supported: ['RS256'],
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
@@ -287,18 +287,20 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
 
   // token-exchange grant(RFC 8693):把本客户端自己的 token 换成目标受众的短期 token
   if (form.get('grant_type') === 'urn:ietf:params:oauth:grant-type:token-exchange') {
+    // subject_token_type 仅作协议兼容,不校验(id_token/access_token 均接受)
     const subjectToken = form.get('subject_token') ?? ''
     const audience = (form.get('audience') ?? '').trim()
-    const allowed = client.allowed_audiences ?? []
+    const allowed = Array.isArray(client.allowed_audiences) ? client.allowed_audiences : []
     if (!subjectToken || !audience) {
+      audit({ event: 'token_exchange', ok: false, client_id: clientId, ip, detail: '缺少 subject_token 或 audience' })
       return json(res, 400, { error: 'invalid_request', error_description: '缺少 subject_token 或 audience' })
     }
     if (!allowed.includes(audience)) {
-      audit({ event: 'token_exchange', ok: false, client_id: clientId, ip, detail: `audience 未授权: ${audience}` })
+      audit({ event: 'token_exchange', ok: false, client_id: clientId, ip, detail: JSON.stringify({ audience, reason: '未授权' }) })
       return json(res, 400, { error: 'invalid_target' })
     }
 
-    let payload: import('jose').JWTPayload
+    let payload: JWTPayload
     try {
       const header = decodeProtectedHeader(subjectToken)
       const pub = getPublicKeyFor(header.kid)
@@ -314,8 +316,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
       return json(res, 400, { error: 'invalid_grant', error_description: 'subject_token 受众与客户端不符' })
     }
 
-    const configured = Number(process.env.SSO_EXCHANGE_TTL ?? 3600)
-    const ttl = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 3600
+    const ttl = config.exchangeTtlSeconds
     const now = Math.floor(Date.now() / 1000)
     const { privateKey, kid } = await getSigningKey()
     const accessToken = await new SignJWT({
@@ -335,7 +336,7 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
       .setExpirationTime(now + ttl)
       .sign(privateKey)
 
-    audit({ event: 'token_exchange', ok: true, sub: payload.sub, client_id: clientId, ip })
+    audit({ event: 'token_exchange', ok: true, sub: payload.sub, client_id: clientId, ip, detail: JSON.stringify({ audience }) })
     return json(res, 200, {
       access_token: accessToken,
       issued_token_type: 'urn:ietf:params:oauth:token-type:access_token',

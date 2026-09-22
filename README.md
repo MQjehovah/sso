@@ -45,6 +45,7 @@ npm 脚本:
 | `SSO_SESSION_TTL_HOURS` | `8` | SSO 会话(`sso_sid`)有效期(小时),访问时滑动续期 |
 | `SSO_ACCESS_TOKEN_TTL_SECONDS` | `600` | access_token 寿命(秒),须为 ≥1 的整数,否则快速失败 |
 | `SSO_ID_TOKEN_TTL_SECONDS` | `600` | id_token 寿命(秒),须为 ≥1 的整数,否则快速失败 |
+| `SSO_EXCHANGE_TTL` | `3600` | token-exchange 换取的 access_token 寿命(秒),须为 ≥1 的整数,否则快速失败 |
 | `SSO_KEY_RETIRE_AFTER_HOURS` | `2` | 密钥退休窗口(小时),可为 0(立即退休) |
 | `LDAP_URL` | 未设置 | 设置后启用真实 LDAP;未设置则使用 `FILE_USERS_PATH` 文件目录 |
 | `LDAP_BIND_DN` | 无 | 配置 `LDAP_URL` 时必填,读账号 bind DN |
@@ -76,6 +77,7 @@ npm 脚本:
 - **`${ENV:NAME}` 占位**:`client_secret` 支持形如 `${ENV:SSO_SECRET_AGENT}` 的占位,服务启动时由 `src/clients.ts` 展开。**若引用的环境变量缺失或为空串,服务直接启动失败**(避免空 secret 造成鉴权绕过);`${ENV:...}` 格式非法时同样抛错,不会被当作字面量 secret 静默生效。
 - **空/非字符串 secret 被拒绝**:`client_secret` 缺失、为空串或非字符串都会在加载时抛错并阻止启动。
 - **`refresh_ttl_hours`**:设置该客户端的 refresh token 有效期(小时),默认 `12`;非法值回退为 12。该值决定从**首次授权时间**起算的绝对会话上限,刷新轮换不会延长。
+- **`allowed_audiences`**:允许本客户端通过 token-exchange 换取的目标受众列表(如 `["router"]`);未配置 = 禁止交换。若配置则必须是非空字符串数组,否则启动失败。
 - **生成 secret**:
 
   ```bash
@@ -142,7 +144,7 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 | `/login/password` | POST | 账号密码登录(LDAP / 文件目录),成功后发 code |
 | `/dingtalk/start` | GET | 跳转钉钉扫码授权页;未配置扫码时返回友好提示 |
 | `/dingtalk/callback` | GET | 钉钉回调,换取身份并完成登录 |
-| `/token` | POST | 授权码或 refresh_token 换取令牌。**refresh token 一次性使用,每次刷新都会轮换**;刷新沿用首次授权时间,受绝对会话上限约束(`refresh_ttl_hours`) |
+| `/token` | POST | 授权码、refresh_token 或 token-exchange(`urn:ietf:params:oauth:grant-type:token-exchange`)换取令牌;交换用本客户端自己的 id_token/access_token 换取 `audience` 指定的短期 token,受众须在该客户端 `allowed_audiences` 内。**refresh token 一次性使用,每次刷新都会轮换**;刷新沿用首次授权时间,受绝对会话上限约束(`refresh_ttl_hours`) |
 | `/userinfo` | GET | 用 Bearer access_token 返回 `sub/name/dept/roles`(有钉钉号时含 `dingtalk`) |
 | `/logout` | GET | 销毁会话并吊销该用户 refresh token,可跳回已登记的 `post_logout_redirect_uri` |
 | `/profile` | GET | 账号设置页(需已登录);扫码后 10 分钟内可免当前密码激活 |
@@ -153,8 +155,8 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # 单元测试(28 个用例)
+npm test            # 单元测试(44 个用例)
 npm run test:smoke  # 端到端烟测,需 test/fixtures/clients.json 与 test/data/users.json 夹具
 ```
 
-烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、密码激活、禁用账号扫码被拒、授权码一次性、单点登录、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销。
+烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、密码激活、禁用账号扫码被拒、授权码一次性、单点登录、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)。

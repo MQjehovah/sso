@@ -1,13 +1,40 @@
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expandSecret } from '../src/clients.ts'
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+const tmpDirs: string[] = []
 
 afterEach(() => {
   delete process.env.TEST_SECRET_X
   delete process.env.TEST_SECRET_EMPTY
   delete process.env.TEST_SECRET_MISSING
   delete process.env.TEST_SECRET_BLANK
+  for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
+
+/**
+ * loadClients 是模块单例(30s 缓存),无法在同一进程里测多组配置;
+ * 因此在子进程中以临时 clients.json 调用,非法配置会让进程以非 0 退出。
+ */
+function loadClientsWith(allowedAudiences: unknown) {
+  const dir = mkdtempSync(join(tmpdir(), 'sso-clients-'))
+  tmpDirs.push(dir)
+  const path = join(dir, 'clients.json')
+  writeFileSync(path, JSON.stringify({
+    clients: [{ client_id: 'test', client_secret: 's', redirect_uris: [], allowed_audiences: allowedAudiences }]
+  }))
+  return spawnSync(process.execPath, ['--experimental-strip-types', '-e', "import('./src/clients.ts').then(m => { m.loadClients(); console.log('ok') })"], {
+    cwd: repoRoot,
+    env: { ...process.env, SSO_CLIENTS_PATH: path },
+    encoding: 'utf-8'
+  })
+}
 
 test('${ENV:NAME} 占位被环境变量替换', () => {
   process.env.TEST_SECRET_X = 's3cret'
@@ -42,4 +69,34 @@ test('非法占位格式抛错', () => {
 
 test('非占位值原样返回', () => {
   assert.equal(expandSecret('plain'), 'plain')
+})
+
+test('allowed_audiences 未配置合法(不启用交换)', () => {
+  const r = loadClientsWith(undefined)
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /ok/)
+})
+
+test('allowed_audiences 为非数组抛错', () => {
+  const r = loadClientsWith('router')
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /allowed_audiences 必须是非空字符串数组/)
+})
+
+test('allowed_audiences 为空数组抛错', () => {
+  const r = loadClientsWith([])
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /allowed_audiences 必须是非空字符串数组/)
+})
+
+test('allowed_audiences 含非字符串元素抛错', () => {
+  const r = loadClientsWith(['router', 123])
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /allowed_audiences 必须是非空字符串数组/)
+})
+
+test('allowed_audiences 含空串元素抛错', () => {
+  const r = loadClientsWith([''])
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /allowed_audiences 必须是非空字符串数组/)
 })

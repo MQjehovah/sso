@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const MANAGED = ['SSO_ACCESS_TOKEN_TTL_SECONDS', 'SSO_ID_TOKEN_TTL_SECONDS', 'SSO_KEY_RETIRE_AFTER_HOURS']
+const MANAGED = ['SSO_ACCESS_TOKEN_TTL_SECONDS', 'SSO_ID_TOKEN_TTL_SECONDS', 'SSO_KEY_RETIRE_AFTER_HOURS', 'SSO_EXCHANGE_TTL']
 
 /**
  * config.ts 是模块单例,导入即求值,无法在同一进程里测多组环境变量。
@@ -59,4 +59,22 @@ test('keyRetireAfterHours 允许 0(立即退休)', () => {
   const r = readConfig({ SSO_KEY_RETIRE_AFTER_HOURS: '0' }, 'm.config.keyRetireAfterHours')
   assert.equal(r.status, 0, r.stderr)
   assert.equal(r.stdout.trim(), '0')
+})
+
+test('SSO_EXCHANGE_TTL 未设置时默认 3600', () => {
+  const r = readConfig({}, 'm.config.exchangeTtlSeconds')
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(r.stdout.trim(), '3600')
+})
+
+test('SSO_EXCHANGE_TTL 合法数字被采用', () => {
+  const r = readConfig({ SSO_EXCHANGE_TTL: '90' }, 'm.config.exchangeTtlSeconds')
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(r.stdout.trim(), '90')
+})
+
+test('SSO_EXCHANGE_TTL 非数字快速失败且错误信息含变量名', () => {
+  const r = readConfig({ SSO_EXCHANGE_TTL: 'abc' }, 'm.config.exchangeTtlSeconds')
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /SSO_EXCHANGE_TTL/)
 })

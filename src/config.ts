@@ -96,6 +96,8 @@ export const config = {
   accessTokenTtlSeconds: posIntEnv('SSO_ACCESS_TOKEN_TTL_SECONDS', 600),
   /** id_token 寿命(秒),默认 10 分钟 */
   idTokenTtlSeconds: posIntEnv('SSO_ID_TOKEN_TTL_SECONDS', 600),
+  /** token-exchange 换取的 access_token 寿命(秒),默认 1 小时 */
+  exchangeTtlSeconds: posIntEnv('SSO_EXCHANGE_TTL', 3600),
 
   /** 客户端注册文件 */
   clientsPath: process.env.SSO_CLIENTS_PATH ?? './clients.json'
