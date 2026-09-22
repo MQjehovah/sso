@@ -46,7 +46,7 @@
 新增 `<SSO_DATA_DIR>/reset_codes.json`（复用 `store.ts` 的 JSON 持久化风格）：
 
 ```
-{ "<sub>": { email, codeHash, salt, expiresAt, attempts, sentAt, ip } }
+[{ sub, email, codeHash, salt, expiresAt, attempts, sentAt, ip }]
 ```
 
 - `codeHash`：`scrypt(code, salt)`（不存明文码）。
