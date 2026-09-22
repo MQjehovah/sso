@@ -173,15 +173,23 @@ test('confirmReset: 错码 → 统一失败文案且不写密码', async () => {
   assert.match(evt.detail ?? '', /mismatch/)
 })
 
-test('confirmReset: 密码过短/过长 → 统一失败文案且不消费验证码', async () => {
-  for (const bad of ['short', 'x'.repeat(65)]) {
-    const { deps, codes, setPasswordCalls } = makeDeps()
-    codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-    const res = await confirmReset({ sub: '1001', code: '123456', newPassword: bad, ip: '10.0.0.36' }, deps)
-    assert.deepEqual(res, { ok: false, message: RESET_FAIL_MESSAGE })
-    assert.ok(codes.peek('1001'), '长度不符时验证码必须保留')
-    assert.equal(setPasswordCalls.length, 0)
-  }
+test('confirmReset: 密码不足 8 位 → 明确文案且不消费验证码', async () => {
+  const { deps, codes, setPasswordCalls, audits } = makeDeps()
+  codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'short', ip: '10.0.0.36' }, deps)
+  assert.deepEqual(res, { ok: false, message: '新密码至少 8 位' })
+  assert.ok(codes.peek('1001'), '长度不符时验证码必须保留')
+  assert.equal(setPasswordCalls.length, 0)
+  assert.ok(audits.some((e) => e.event === 'reset_confirm' && !e.ok))
+})
+
+test('confirmReset: 长度规则与 profile 一致(仅要求 ≥8, 无上限)', async () => {
+  const { deps, codes, setPasswordCalls } = makeDeps()
+  const long = 'x'.repeat(65)
+  codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: long, ip: '10.0.0.42' }, deps)
+  assert.deepEqual(res, { ok: true })
+  assert.equal(setPasswordCalls[0]?.next, long)
 })
 
 test('confirmReset: 正确码 → 写密码/踢会话与 token/通知/审计 ok=true', async () => {
@@ -198,6 +206,46 @@ test('confirmReset: 正确码 → 写密码/踢会话与 token/通知/审计 ok=
   assert.equal(notices[0].to, 'zs@corp.com')
   assert.ok(audits.some((e) => e.event === 'reset_confirm' && e.ok === true))
   assert.equal(codes.peek('1001'), undefined, '验证码单次有效, 重置后清除')
+})
+
+test('confirmReset: 审计记录目录规范 sub(手机号输入 → 工号)', async () => {
+  const { deps, codes, audits, setPasswordCalls } = makeDeps({
+    directory: { findByIdentifier: async (id) => (id === '13800000001' ? USER : null) }
+  })
+  codes.issue('13800000001', 'zs@corp.com', '123456', '10.0.0.1')
+  const res = await confirmReset({ sub: '13800000001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.43' }, deps)
+  assert.deepEqual(res, { ok: true })
+  assert.equal(setPasswordCalls[0]?.user.sub, '1001')
+  assert.equal(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.sub, '1001')
+})
+
+test('requestReset: 审计记录目录规范 sub(手机号输入 → 工号)', async () => {
+  const { deps, mails, audits } = makeDeps({
+    directory: { findByIdentifier: async (id) => (id === '13800000001' ? USER : null) }
+  })
+  await requestReset({ sub: '13800000001', ip: '10.0.0.44' }, deps)
+  assert.equal(mails.length, 1)
+  assert.equal(audits.find((e) => e.event === 'reset_request' && e.ok)?.sub, '1001')
+})
+
+test('confirmReset: revoke 抛错不阻断成功(审计含 revokeError, 通知仍发)', async () => {
+  const { deps, codes, notices, audits, setPasswordCalls } = makeDeps()
+  deps.revokeTokens = () => { throw new Error('磁盘只读') }
+  codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.45' }, deps)
+  assert.deepEqual(res, { ok: true })
+  assert.equal(setPasswordCalls.length, 1)
+  assert.equal(notices.length, 1)
+  assert.match(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.detail ?? '', /revokeError: 磁盘只读/)
+})
+
+test('confirmReset: revokeSessions 抛错同样兜底', async () => {
+  const { deps, codes, audits } = makeDeps()
+  deps.revokeSessions = () => { throw new Error('会话文件写失败') }
+  codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.46' }, deps)
+  assert.deepEqual(res, { ok: true })
+  assert.match(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.detail ?? '', /revokeError: 会话文件写失败/)
 })
 
 test('confirmReset: 目录查无用户 → 统一失败文案且不写密码', async () => {

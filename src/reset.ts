@@ -188,7 +188,7 @@ export async function requestReset(input: { sub: string; ip: string }, deps: Res
       reason = `发送失败: ${(err as Error).message}`
     }
   }
-  deps.audit({ event: 'reset_request', ok: true, sub, ip, detail: JSON.stringify({ sent, reason }) })
+  deps.audit({ event: 'reset_request', ok: true, sub: user?.sub ?? sub, ip, detail: JSON.stringify({ sent, reason }) })
   return { message: RESET_REQUEST_MESSAGE }
 }
 
@@ -198,26 +198,38 @@ export async function confirmReset(
   deps: ResetDeps
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   const sub = input.sub.trim()
+  // 审计优先用目录规范 sub(手机号输入→工号);查不到目录用户时保留原始输入
+  let auditSub = sub
   const fail = (detail: string): { ok: false; message: string } => {
-    deps.audit({ event: 'reset_confirm', ok: false, sub: sub || undefined, ip: input.ip, detail })
+    deps.audit({ event: 'reset_confirm', ok: false, sub: auditSub || undefined, ip: input.ip, detail })
     return { ok: false, message: RESET_FAIL_MESSAGE }
   }
-  // 密码长度不符时不消费验证码,允许用户改正后重试
-  if (input.newPassword.length < 8 || input.newPassword.length > 64) return fail('新密码长度不符(需 8-64 位)')
+  // 长度规则与 /profile/password 对齐(仅要求 ≥8);不符时不消费验证码,且属用户自有输入,给明确提示
+  if (input.newPassword.length < 8) {
+    deps.audit({ event: 'reset_confirm', ok: false, sub: sub || undefined, ip: input.ip, detail: '新密码少于 8 位' })
+    return { ok: false, message: '新密码至少 8 位' }
+  }
 
   const result = deps.codes.verifyAndConsume(sub, input.code)
   if (result !== 'ok') return fail(`验证码校验失败(${result})`)
 
   const user = await deps.directory.findByIdentifier(sub)
   if (!user) return fail('目录中无此工号')
+  auditSub = user.sub
   try {
     await deps.password.setPassword(user, null, input.newPassword)
   } catch (err) {
     return fail(`设置密码失败: ${(err as Error).message}`)
   }
 
-  deps.revokeSessions(sub)
-  deps.revokeTokens(sub)
+  // 密码已改是既成事实:revoke 落盘异常只记审计,不阻断成功返回与变更通知
+  let revokeError: string | undefined
+  try {
+    deps.revokeSessions(user.sub)
+    deps.revokeTokens(user.sub)
+  } catch (err) {
+    revokeError = (err as Error).message
+  }
   let noticeError: string | undefined
   if (user.email) {
     try {
@@ -226,12 +238,16 @@ export async function confirmReset(
       noticeError = (err as Error).message
     }
   }
+  const details = [
+    revokeError ? `revokeError: ${revokeError}` : '',
+    noticeError ? `变更通知发送失败: ${noticeError}` : ''
+  ].filter(Boolean)
   deps.audit({
     event: 'reset_confirm',
     ok: true,
-    sub,
+    sub: user.sub,
     ip: input.ip,
-    detail: noticeError ? `变更通知发送失败: ${noticeError}` : undefined
+    detail: details.length ? details.join('; ') : undefined
   })
   return { ok: true }
 }

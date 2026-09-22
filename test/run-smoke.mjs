@@ -724,6 +724,9 @@ async function main() {
     })
     try {
       assert('重置实例健康检查', await waitHealth(`${RESET}/healthz`))
+      // 重置前先拿一份 refresh_token, 供重置后验证被吊销
+      const preResetTokens = await passwordCodeGrant(RESET, '10001', 'pass123')
+      assert('重置前取得 refresh_token(前置)', typeof preResetTokens.refresh_token === 'string' && preResetTokens.refresh_token.length > 20)
       const captureFile = new URL('./data-reset/smtp-capture.jsonl', import.meta.url)
       const captureMails = () => {
         try {
@@ -780,6 +783,15 @@ async function main() {
       assert('重置后旧密码登录失败', oldPwdLogin.status === 302 && oldPwdLogin.location.includes('error='))
       const newPwdLogin = await tryPasswordLogin('newpass789', 'sreset-new')
       assert('重置后新密码登录成功(302 携带 code)', newPwdLogin.status === 302 && newPwdLogin.location.startsWith(REDIRECT_URI) && newPwdLogin.location.includes('code='))
+
+      // 重置成功必须吊销该用户全部 refresh token
+      const rStaleRefresh = await fetch(`${RESET}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: preResetTokens.refresh_token, client_id: 'test-web', client_secret: 'test-secret' })
+      })
+      const staleRefreshBody = await rStaleRefresh.json()
+      assert('重置后旧 refresh_token 被吊销(400 invalid_grant)', rStaleRefresh.status === 400 && staleRefreshBody.error === 'invalid_grant')
 
       const mailsBeforeProbe = captureMails().length
       const rGhost = await postForm('/reset/request', 'sub=19999')

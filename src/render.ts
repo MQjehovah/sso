@@ -90,8 +90,8 @@ export function resetPage(opts: { step: 1 | 2; sub?: string; notice?: string; er
     : `<form method="post" action="/reset/confirm">
         <input type="hidden" name="sub" value="${escapeHtml(sub ?? '')}" />
         <label>邮箱验证码</label><input name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required />
-        <label>新密码(至少 8 位)</label><input name="new_password" type="password" minlength="8" maxlength="64" required />
-        <label>确认新密码</label><input name="confirm" type="password" minlength="8" maxlength="64" required />
+        <label>新密码(至少 8 位)</label><input name="new_password" type="password" minlength="8" required />
+        <label>确认新密码</label><input name="confirm" type="password" minlength="8" required />
         <label></label><button class="btn primary" type="submit">重置密码</button>
       </form>`
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>重置登录密码</title>

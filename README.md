@@ -67,6 +67,7 @@ npm 脚本:
 | `DINGTALK_LOGIN_BASE` | `https://login.dingtalk.com` | 扫码授权页基地址 |
 | `SSO_DINGTALK_REDIRECT_URI` | 无 | 启用扫码时必填,须与钉钉后台回流域名一致,如 `http://127.0.0.1:8091/dingtalk/callback` |
 | `SSO_DEBUG` | 未设置 | 任意非空值开启调试日志(如 PKCE、userinfo 校验细节),生产留空 |
+| `SSO_TRUST_PROXY` | 未设置 | 设为 `true` 时信任反代头(`x-real-ip` 优先,其次 `x-forwarded-for` 最后一段;仅合法 IPv4/IPv6 才采用)作为客户端 IP,用于限流;服务被直连暴露时保持关闭防伪造 |
 | `SSO_SECRET_*` | 无 | 客户端密钥,由 `src/clients.ts` 在展开 `clients.json` 的 `${ENV:...}` 占位时读取;未设置或为空串会导致启动失败。示例见 `.env.example`:`SSO_SECRET_AGENT`、`SSO_SECRET_DASHBOARD`、`SSO_SECRET_MARKET`、`SSO_SECRET_RAG`、`SSO_SECRET_ROUTER`、`SSO_SECRET_ZHONGTAI_OA`、`SSO_SECRET_TEST_WEB` |
 
 > 说明:`authorize` 事务 TTL 固定 10 分钟、授权码 TTL 固定 5 分钟,不可通过环境变量调整。

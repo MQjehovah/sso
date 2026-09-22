@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { isIP } from 'node:net'
 import { decodeProtectedHeader, jwtVerify, SignJWT, type JWTPayload } from 'jose'
 import { config } from './config.ts'
 import { getClient, expandRoles, refreshTtlHours } from './clients.ts'
@@ -73,8 +74,21 @@ function formToObject(body: Buffer): Record<string, string> {
   return Object.fromEntries(new URLSearchParams(body.toString('utf-8')))
 }
 
-function clientIp(req: import('node:http').IncomingMessage): string {
-  return req.socket.remoteAddress ?? 'unknown'
+/**
+ * 客户端 IP:
+ * - trustProxy=false(默认):仅用 socket 地址,忽略可伪造的转发头;
+ * - trustProxy=true:优先 x-real-ip(nginx 用 $remote_addr 覆盖写),其次 x-forwarded-for 最后一段,
+ *   仅合法 IPv4/IPv6 才采用,非法/缺失回退 socket 地址(防头部注入乱值)。
+ */
+export function clientIp(req: { socket: { remoteAddress?: string }; headers: Record<string, string | string[] | undefined> }): string {
+  const socketIp = req.socket.remoteAddress ?? 'unknown'
+  if (!config.trustProxy) return socketIp
+  const header = (name: string): string => {
+    const v = req.headers[name]
+    return (Array.isArray(v) ? v[0] : v ?? '').trim()
+  }
+  const candidate = header('x-real-ip') || (header('x-forwarded-for').split(',').pop() ?? '').trim()
+  return isIP(candidate) ? candidate : socketIp
 }
 
 // ---- discovery / jwks ----

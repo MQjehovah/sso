@@ -73,6 +73,11 @@ export const config = {
   },
   fileUsersPath: process.env.FILE_USERS_PATH ?? './data/users.json',
 
+  /** 是否信任反向代理传来的客户端 IP 头(x-real-ip/x-forwarded-for);默认关闭,仅当服务不直接对外暴露时开启 */
+  get trustProxy(): boolean {
+    return (process.env.SSO_TRUST_PROXY ?? '').trim().toLowerCase() === 'true'
+  },
+
   /** 钉钉扫码是否已配置(未配置时登录页隐藏扫码入口,/dingtalk/start 返回友好提示) */
   get dingtalkConfigured(): boolean {
     return !!process.env.DINGTALK_APP_KEY && !!process.env.DINGTALK_APP_SECRET
