@@ -248,6 +248,7 @@ async function main() {
     assert('JWKS 公钥集可用', Array.isArray(jwks.keys) && jwks.keys.length === 1)
     const discoveryMeta = await (await fetch(`${SSO}/.well-known/openid-configuration`)).json()
     assert('discovery 声明 token-exchange grant', (discoveryMeta.grant_types_supported ?? []).includes('urn:ietf:params:oauth:grant-type:token-exchange'))
+    assert('discovery 声明公共客户端认证方式 none', (discoveryMeta.token_endpoint_auth_methods_supported ?? []).includes('none'))
 
     // ---- 密码通道 ----
     const jar1 = new Jar()

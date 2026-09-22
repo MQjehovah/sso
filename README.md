@@ -175,7 +175,7 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 ```bash
 npm run typecheck   # tsc --noEmit
 npm test            # 单元测试(110 个用例)
-npm run test:smoke  # 端到端烟测(144 条断言),需 test/fixtures/clients.json 与 test/data/users.json 夹具
+npm run test:smoke  # 端到端烟测(145 条断言),需 test/fixtures/clients.json 与 test/data/users.json 夹具
 ```
 
 烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、会话确认页与换账号(continue/switch、`prompt=login`/`none`/`login none`)、事务一次性(同 tx 重复与并发)、CSRF 会话绑定(跨会话重放被拒)、无会话 POST 回登录页、密码激活、禁用账号扫码被拒、授权码一次性、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)、公共客户端 + PKCE(缺 challenge 拒绝/无 secret 换 token/缺与错 verifier 拒绝/refresh/交换)、自助重置(两步表单/验证码邮件捕获/错码与密码不一致/重置后旧密码与旧 refresh token 失效/枚举防护)、个人页退出登录与使用其他账号(撤销 refresh token 与否、跨会话 CSRF 拒绝)。

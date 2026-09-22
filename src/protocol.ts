@@ -115,7 +115,7 @@ export async function handleDiscovery(res: import('node:http').ServerResponse): 
     grant_types_supported: ['authorization_code', 'refresh_token', 'urn:ietf:params:oauth:grant-type:token-exchange'],
     subject_types_supported: ['public'],
     id_token_signing_alg_values_supported: ['RS256'],
-    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     code_challenge_methods_supported: ['S256'],
     scopes_supported: ['openid', 'profile'],
     claims_supported: ['sub', 'name', 'dept', 'roles', 'dingtalk']
