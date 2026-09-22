@@ -15,6 +15,14 @@
       "redirect_uris": ["http://127.0.0.1:18090/api/auth/oidc/callback"],
       "default_role": "user",
       "allowed_audiences": ["router"]
+    },
+    {
+      "client_id": "test-public",
+      "public": true,
+      "name": "烟测公共客户端(PKCE)",
+      "redirect_uris": ["http://127.0.0.1:19990/cb"],
+      "default_role": "user",
+      "allowed_audiences": ["test-public"]
     }
   ]
 }

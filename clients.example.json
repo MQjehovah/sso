@@ -2,7 +2,7 @@
   "clients": [
     {
       "client_id": "dashboard-gateway",
-      "client_secret": "${ENV:SSO_SECRET_DASHBOARD}",
+      "public": true,
       "name": "员工 AI 工作台",
       "redirect_uris": ["http://127.0.0.1:8090/api/auth/oidc/callback"],
       "post_logout_redirect_uris": [],

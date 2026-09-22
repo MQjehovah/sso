@@ -137,6 +137,51 @@ async function passwordCodeGrant(base, username, password, clientId = 'test-web'
   return res.json()
 }
 
+/**
+ * 公共客户端(test-public)PKCE 授权:无会话时走登录页+密码登录(带 S256 challenge),
+ * 已有会话时复用确认页 continue(不再消耗密码登录限流)。返回 { jar, verifier, viaLogin, code }。
+ */
+async function publicAuthorize(base, state, { jar = new Jar(), username = '10001', password = 'pass123' } = {}) {
+  const verifier = oidc.randomPKCECodeVerifier()
+  const authUrl = `${base}/authorize?client_id=test-public&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=openid&state=${state}&nonce=${state}&code_challenge=${await oidc.calculatePKCECodeChallenge(verifier)}&code_challenge_method=S256`
+  const rAuth = await ssoFetch(jar, authUrl, { redirect: 'manual' })
+  const viaLogin = rAuth.status === 302
+  let location
+  if (viaLogin) {
+    const tx = new URL(rAuth.headers.get('location'), base).searchParams.get('tx')
+    const csrf = await csrfForLogin(jar, base, tx)
+    const rLogin = await ssoFetch(jar, `${base}/login/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${tx}&username=${username}&password=${password}&csrf=${csrf}`,
+      redirect: 'manual'
+    })
+    jar.absorb(rLogin)
+    location = rLogin.headers.get('location') ?? ''
+  } else {
+    const html = await rAuth.text()
+    const tx = (html.match(/name="tx" value="([^"]+)"/) ?? [])[1] ?? ''
+    const csrf = extractCsrf(html)
+    const rContinue = await ssoFetch(jar, `${base}/authorize/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${tx}&csrf=${csrf}`,
+      redirect: 'manual'
+    })
+    location = rContinue.headers.get('location') ?? ''
+  }
+  return { jar, verifier, viaLogin, code: new URL(location, base).searchParams.get('code') ?? '' }
+}
+
+/** 公共客户端 token 请求:默认只带 client_id,不带 client_secret */
+function publicToken(base, fields) {
+  return fetch(`${base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: 'test-public', ...fields })
+  })
+}
+
 /** 完整密码登录:返回独立 Jar、其 sso_sid 与授权码换取的 token 组 */
 async function passwordLogin(configuration, username, password, state) {
   const jar = new Jar()
@@ -894,6 +939,69 @@ async function main() {
     assert('成功交换审计 detail 为 JSON 转义且含 audience', exAudits.some((d) => d.audience === 'router'))
     assert('invalid_target 审计 detail 同样转义且含 audience', exAudits.some((d) => d.audience === 'market' && d.reason === '未授权'))
     assert('invalid_request 缺失参数路径有失败审计', auditEvents.some((e) => e.event === 'token_exchange' && !e.ok && e.detail === '缺少 subject_token 或 audience'))
+
+    // ---- 公共客户端 + PKCE(无 client_secret) ----
+    // 独立第四实例:主实例密码登录限流(10 次/分钟)已被既有用例用满,公共客户端需一次干净的密码登录
+    const PUB_PORT = 18094
+    const PUB = `http://127.0.0.1:${PUB_PORT}`
+    const pubDataDir = new URL('./data-public', import.meta.url)
+    const pubKeysDir = new URL('./keys-public', import.meta.url)
+    rmSync(pubDataDir, { recursive: true, force: true })
+    rmSync(pubKeysDir, { recursive: true, force: true })
+    const sso4 = spawnAndWait('node', ['--experimental-strip-types', 'src/index.ts'], {
+      SSO_PORT: String(PUB_PORT),
+      SSO_ISSUER: PUB,
+      SSO_DATA_DIR: 'test/data-public',
+      SSO_KEYS_DIR: 'test/keys-public',
+      SSO_CLIENTS_PATH: 'test/fixtures/clients.json',
+      FILE_USERS_PATH: 'test/data/users.json'
+    })
+    try {
+      assert('公共客户端实例健康检查', await waitHealth(`${PUB}/healthz`))
+      const pubJWKS = createRemoteJWKSet(new URL(`${PUB}/.well-known/jwks.json`))
+
+      // 1) authorize 缺 code_challenge → 400(公共客户端必须 PKCE)
+      const rPubNoPkce = await fetch(`${PUB}/authorize?client_id=test-public&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=openid&state=spub0&nonce=spub0`, { redirect: 'manual' })
+      assert('公共客户端 authorize 缺 code_challenge → 400', rPubNoPkce.status === 400 && (await rPubNoPkce.text()).includes('公共客户端必须使用 PKCE'))
+
+      // 2) 带 S256 challenge → 登录页 → 密码登录 → code → 不带 secret + 正确 verifier 换 token
+      const pub1 = await publicAuthorize(PUB, 'spub1')
+      assert('公共客户端 PKCE authorize → 走登录页并完成密码登录', pub1.viaLogin && !!pub1.code)
+      const pubGrantRes = await publicToken(PUB, { grant_type: 'authorization_code', code: pub1.code, redirect_uri: REDIRECT_URI, code_verifier: pub1.verifier })
+      const pubGrant = await pubGrantRes.json()
+      assert('公共客户端授权码+正确 verifier 不带 secret → 200', pubGrantRes.status === 200 && typeof pubGrant.access_token === 'string' && typeof pubGrant.id_token === 'string' && typeof pubGrant.refresh_token === 'string')
+      const { payload: pubClaims } = await jwtVerify(pubGrant.id_token, pubJWKS, { issuer: PUB, audience: 'test-public', nonce: 'spub1' })
+      assert('公共客户端 id_token 验签通过(aud=test-public/sub=10001)', pubClaims.sub === '10001')
+
+      // 3) 缺 code_verifier → 400(授权码已被消费)
+      const pub2 = await publicAuthorize(PUB, 'spub2', { jar: pub1.jar })
+      assert('公共客户端复用会话确认页取 code(无二次密码登录)', !pub2.viaLogin && !!pub2.code)
+      const pubNoVerifierRes = await publicToken(PUB, { grant_type: 'authorization_code', code: pub2.code, redirect_uri: REDIRECT_URI })
+      const pubNoVerifier = await pubNoVerifierRes.json()
+      assert('公共客户端缺 code_verifier → 400 invalid_grant', pubNoVerifierRes.status === 400 && pubNoVerifier.error === 'invalid_grant')
+
+      // 4) 错误 code_verifier → 400
+      const pub3 = await publicAuthorize(PUB, 'spub3', { jar: pub1.jar })
+      const pubWrongVerifierRes = await publicToken(PUB, { grant_type: 'authorization_code', code: pub3.code, redirect_uri: REDIRECT_URI, code_verifier: oidc.randomPKCECodeVerifier() })
+      const pubWrongVerifier = await pubWrongVerifierRes.json()
+      assert('公共客户端错误 code_verifier → 400 invalid_grant', pubWrongVerifierRes.status === 400 && pubWrongVerifier.error === 'invalid_grant')
+
+      // 5) refresh_token grant 不带 secret → 200
+      const pubRefreshRes = await publicToken(PUB, { grant_type: 'refresh_token', refresh_token: pubGrant.refresh_token })
+      const pubRefresh = await pubRefreshRes.json()
+      assert('公共客户端 refresh_token 不带 secret → 200 且轮换', pubRefreshRes.status === 200 && typeof pubRefresh.access_token === 'string' && pubRefresh.refresh_token !== pubGrant.refresh_token)
+
+      // 6) token-exchange:公共客户端用自身 id_token 换白名单内受众 → 200
+      const pubExchangeRes = await publicToken(PUB, { grant_type: EXCHANGE_GRANT, subject_token: pubGrant.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'test-public' })
+      const pubExchange = await pubExchangeRes.json()
+      assert('公共客户端 token-exchange 不带 secret → 200', pubExchangeRes.status === 200 && typeof pubExchange.access_token === 'string')
+      const pubExchangeClaims = typeof pubExchange.access_token === 'string' ? decodeJwt(pubExchange.access_token) : {}
+      assert('公共客户端交换所得 token aud=test-public 且 act=test-public', pubExchangeClaims.aud === 'test-public' && pubExchangeClaims.act === 'test-public')
+    } finally {
+      sso4.kill()
+      rmSync(pubDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      rmSync(pubKeysDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
 
     // ---- TTL 可配置覆盖:第二实例(access 60s / id 120s)证明环境变量真正生效 ----
     const sso2Base = `http://127.0.0.1:${SSO_TTL_PORT}`

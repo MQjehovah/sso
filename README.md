@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-本仓库是公司内部的 OIDC Provider(OpenID Connect 认证中心),基于 Node.js 原生 HTTP 实现,不依赖任何 Web 框架。它实现授权码模式(Authorization Code)+ PKCE S256,提供钉钉扫码与 LDAP(或开发/烟测用的文件目录)账号密码两种登录通道,统一为 agent(零号员工)、market(能力市场)、rag(企业知识库)、router(算力网关控制台)、dashboard(员工 AI 工作台)提供单点登录与身份令牌。签名采用 RS256 密钥环(active 签发、verifying 继续验签),客户端密钥由环境变量注入。
+本仓库是公司内部的 OIDC Provider(OpenID Connect 认证中心),基于 Node.js 原生 HTTP 实现,不依赖任何 Web 框架。它实现授权码模式(Authorization Code)+ PKCE S256,提供钉钉扫码与 LDAP(或开发/烟测用的文件目录)账号密码两种登录通道,统一为 agent(零号员工)、market(能力市场)、rag(企业知识库)、router(算力网关控制台)、dashboard(员工 AI 工作台)提供单点登录与身份令牌。签名采用 RS256 密钥环(active 签发、verifying 继续验签);机密客户端密钥由环境变量注入,公共客户端(如 dashboard,安装包分发场景)不持有密钥,以 PKCE 保护授权码流程。
 
 ## 快速开始
 
@@ -76,7 +76,7 @@ npm 脚本:
 | `SSO_SMTP_FROM_NAME` | `零号员工` | 发件人显示名 |
 | `SSO_SMTP_FROM` | 未设置 | 发件地址,默认与 `SSO_SMTP_USERNAME` 相同 |
 | `SSO_RESET_CODE_TTL_SECONDS` | `600` | 自助重置验证码有效期(秒,≥60);邮件正文的分钟数与实际 TTL 同源 |
-| `SSO_SECRET_*` | 无 | 客户端密钥,由 `src/clients.ts` 在展开 `clients.json` 的 `${ENV:...}` 占位时读取;未设置或为空串会导致启动失败。示例见 `.env.example`:`SSO_SECRET_AGENT`、`SSO_SECRET_DASHBOARD`、`SSO_SECRET_MARKET`、`SSO_SECRET_RAG`、`SSO_SECRET_ROUTER`、`SSO_SECRET_ZHONGTAI_OA`、`SSO_SECRET_TEST_WEB` |
+| `SSO_SECRET_*` | 无 | 机密客户端密钥,由 `src/clients.ts` 在展开 `clients.json` 的 `${ENV:...}` 占位时读取;未设置或为空串会导致启动失败。公共客户端(`public: true`)不需要密钥。示例见 `.env.example`:`SSO_SECRET_AGENT`、`SSO_SECRET_MARKET`、`SSO_SECRET_RAG`、`SSO_SECRET_ROUTER`、`SSO_SECRET_ZHONGTAI_OA`、`SSO_SECRET_TEST_WEB` |
 
 > 说明:`authorize` 事务 TTL 固定 10 分钟、授权码 TTL 固定 5 分钟,不可通过环境变量调整。
 
@@ -84,7 +84,8 @@ npm 脚本:
 
 - **不入版本库**:`clients.json` 已加入 `.gitignore`,`clients.example.json` 是模板。请在部署环境本地创建 `clients.json`。
 - **`${ENV:NAME}` 占位**:`client_secret` 支持形如 `${ENV:SSO_SECRET_AGENT}` 的占位,服务启动时由 `src/clients.ts` 展开。**若引用的环境变量缺失或为空串,服务直接启动失败**(避免空 secret 造成鉴权绕过);`${ENV:...}` 格式非法时同样抛错,不会被当作字面量 secret 静默生效。
-- **空/非字符串 secret 被拒绝**:`client_secret` 缺失、为空串或非字符串都会在加载时抛错并阻止启动。
+- **空/非字符串 secret 被拒绝**:机密客户端(`public` 未置 `true`)的 `client_secret` 缺失、为空串或非字符串都会在加载时抛错并阻止启动。
+- **`public`(公共客户端)**:置为 `true` 时该客户端**不需要** `client_secret`(即使配置了也不会展开 `${ENV:...}` 占位,避免误用);`/authorize` 必须携带 `code_challenge` 且 `code_challenge_method=S256`(否则 400),`/token` 仅凭 `client_id` 识别(授权码必须带正确 `code_verifier`)。refresh_token 与 token-exchange 同样开放,`allowed_audiences` 受众白名单、subject_token `aud === client_id` 等逻辑不变。适用于随安装包分发、无法保管密钥的客户端(如 dashboard)。
 - **`refresh_ttl_hours`**:设置该客户端的 refresh token 有效期(小时),默认 `12`;非法值回退为 12。该值决定从**首次授权时间**起算的绝对会话上限,刷新轮换不会延长。
 - **`allowed_audiences`**:允许本客户端通过 token-exchange 换取的目标受众列表(如 `["router"]`);未配置 = 禁止交换。若配置则必须是非空字符串数组,否则启动失败。
 - **生成 secret**:
@@ -150,14 +151,14 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 |---|---|---|
 | `/.well-known/openid-configuration` | GET | OIDC discovery 元数据 |
 | `/.well-known/jwks.json` | GET | 发布 active + verifying 公钥(RS256) |
-| `/authorize` | GET | 授权入口;校验 client 与 redirect_uri。**有会话时渲染会话确认页(可换账号)**,`prompt=login` 强制重新登录,`prompt=none` 无 UI(有会话静默发码,否则回 `error=login_required`)。**提供 `code_challenge` 时必须 `code_challenge_method=S256`** |
+| `/authorize` | GET | 授权入口;校验 client 与 redirect_uri。**有会话时渲染会话确认页(可换账号)**,`prompt=login` 强制重新登录,`prompt=none` 无 UI(有会话静默发码,否则回 `error=login_required`)。**提供 `code_challenge` 时必须 `code_challenge_method=S256`;公共客户端(`public: true`)必须提供 `code_challenge`,否则 400** |
 | `/authorize/continue` | POST | 会话确认页「继续以该账号登录」:校验 tx 与 `sid:tx` 绑定的 CSRF 后签发 code;事务一次性(同 tx 重复/并发第二次 400) |
 | `/authorize/switch` | POST | 会话确认页「使用其他账号」:校验同上后仅销毁 SSO 会话(不吊销 refresh token),302 回登录页 |
 | `/login` | GET | 登录页(扫码 / 账号密码双通道) |
 | `/login/password` | POST | 账号密码登录(LDAP / 文件目录),成功后发 code |
 | `/dingtalk/start` | GET | 跳转钉钉扫码授权页;未配置扫码时返回友好提示 |
 | `/dingtalk/callback` | GET | 钉钉回调,换取身份并完成登录 |
-| `/token` | POST | 授权码、refresh_token 或 token-exchange(`urn:ietf:params:oauth:grant-type:token-exchange`)换取令牌;交换用本客户端自己的 id_token/access_token 换取 `audience` 指定的短期 token,受众须在该客户端 `allowed_audiences` 内。**refresh token 一次性使用,每次刷新都会轮换**;刷新沿用首次授权时间,受绝对会话上限约束(`refresh_ttl_hours`) |
+| `/token` | POST | 授权码、refresh_token 或 token-exchange(`urn:ietf:params:oauth:grant-type:token-exchange`)换取令牌;交换用本客户端自己的 id_token/access_token 换取 `audience` 指定的短期 token,受众须在该客户端 `allowed_audiences` 内。**refresh token 一次性使用,每次刷新都会轮换**;刷新沿用首次授权时间,受绝对会话上限约束(`refresh_ttl_hours`)。**公共客户端(`public: true`)不带 `client_secret`,仅凭 `client_id` 认证,授权码必须带正确 `code_verifier`** |
 | `/userinfo` | GET | 用 Bearer access_token 返回 `sub/name/dept/roles`(有钉钉号时含 `dingtalk`) |
 | `/logout` | GET | 销毁会话并吊销该用户 refresh token,可跳回已登记的 `post_logout_redirect_uri` |
 | `/profile` | GET | 账号设置页(需已登录);扫码后 10 分钟内可免当前密码激活 |
@@ -173,8 +174,8 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # 单元测试(105 个用例)
-npm run test:smoke  # 端到端烟测(133 条断言),需 test/fixtures/clients.json 与 test/data/users.json 夹具
+npm test            # 单元测试(110 个用例)
+npm run test:smoke  # 端到端烟测(144 条断言),需 test/fixtures/clients.json 与 test/data/users.json 夹具
 ```
 
-烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、会话确认页与换账号(continue/switch、`prompt=login`/`none`/`login none`)、事务一次性(同 tx 重复与并发)、CSRF 会话绑定(跨会话重放被拒)、无会话 POST 回登录页、密码激活、禁用账号扫码被拒、授权码一次性、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)、自助重置(两步表单/验证码邮件捕获/错码与密码不一致/重置后旧密码与旧 refresh token 失效/枚举防护)、个人页退出登录与使用其他账号(撤销 refresh token 与否、跨会话 CSRF 拒绝)。
+烟测会在本地拉起 mock 钉钉与 SSO 进程,覆盖:密码登录、扫码登录、会话确认页与换账号(continue/switch、`prompt=login`/`none`/`login none`)、事务一次性(同 tx 重复与并发)、CSRF 会话绑定(跨会话重放被拒)、无会话 POST 回登录页、密码激活、禁用账号扫码被拒、授权码一次性、登出、refresh token 轮换与复用拒绝、refresh 绝对上限、access/id token TTL(含环境变量覆盖)、改密后 refresh token 与其它端会话的吊销、token-exchange(discovery 声明/白名单/篡改/受众不符/TTL/claim 继承/审计)、公共客户端 + PKCE(缺 challenge 拒绝/无 secret 换 token/缺与错 verifier 拒绝/refresh/交换)、自助重置(两步表单/验证码邮件捕获/错码与密码不一致/重置后旧密码与旧 refresh token 失效/枚举防护)、个人页退出登录与使用其他账号(撤销 refresh token 与否、跨会话 CSRF 拒绝)。

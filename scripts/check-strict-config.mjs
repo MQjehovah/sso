@@ -5,7 +5,9 @@
  *   1. 缺失 SSO_ISSUER;
  *   2. clients.json 的 client_secret 引用未设置的 ${ENV:...} 变量;
  *   3. clients.json 的 client_secret 为空串。
- * 每类都要求:非 0 退出、从未绑定端口、无启动成功日志、输出点名问题变量/中文提示。
+ * 另加一条正例:public=true 的公共客户端无 client_secret(甚至带无效占位)也必须正常启动
+ * —— 公共客户端跳过 secret 占位/空值校验,改用 PKCE。
+ * 每个负例都要求:非 0 退出、从未绑定端口、无启动成功日志、输出点名问题变量/中文提示。
  * 脚本不需要任何真实密钥,并自行清理临时目录。
  */
 import { spawn } from 'node:child_process'
@@ -128,6 +130,53 @@ async function runCase({ name, setIssuer, clients, expected }) {
   return true
 }
 
+/** 正例:给定 clients.json 必须能正常启动(用于公共客户端跳过 secret 校验的断言) */
+async function runStartCase({ name, clients }) {
+  const port = await freePort()
+  const dir = mkdtempSync(join(tmpdir(), 'sso-strict-'))
+  const clientsPath = join(dir, 'clients.json')
+  writeFileSync(clientsPath, JSON.stringify({ clients }, null, 2))
+  writeFileSync(join(dir, 'users.json'), '[]')
+
+  const env = { ...process.env }
+  for (const key of MANAGED_ENV) delete env[key]
+  Object.assign(env, {
+    SSO_PORT: String(port),
+    SSO_ISSUER: `http://127.0.0.1:${port}`,
+    SSO_DATA_DIR: join(dir, 'data'),
+    SSO_KEYS_DIR: join(dir, 'keys'),
+    SSO_CLIENTS_PATH: clientsPath,
+    FILE_USERS_PATH: join(dir, 'users.json')
+  })
+
+  const child = spawn(NODE, ['--experimental-strip-types', 'src/index.ts'], {
+    cwd: repoRoot,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  let output = ''
+  child.stdout.on('data', (chunk) => { output += chunk })
+  child.stderr.on('data', (chunk) => { output += chunk })
+
+  const deadline = Date.now() + CASE_TIMEOUT_MS
+  while (!output.includes(STARTUP_MARK) && Date.now() < deadline) {
+    await delay(15)
+  }
+  const started = output.includes(STARTUP_MARK)
+  child.kill()
+  await Promise.race([new Promise((resolve) => child.once('exit', resolve)), delay(2_000).then(() => child.kill('SIGKILL'))])
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+
+  if (!started) {
+    console.log(`FAIL | ${name} -> 未在 ${CASE_TIMEOUT_MS}ms 内正常启动`)
+    for (const line of output.split('\n')) console.log(`       | ${line}`)
+    return false
+  }
+  console.log(`PASS | ${name}(正常启动,公共客户端无 secret 不拦截)`)
+  return true
+}
+
 async function main() {
   const cases = [
     {
@@ -154,11 +203,18 @@ async function main() {
   for (const testCase of cases) {
     if (!(await runCase(testCase))) ok = false
   }
+  if (!(await runStartCase({
+    name: '公共客户端(public=true)无 secret 允许启动',
+    clients: [
+      { client_id: 'public-ok', public: true, redirect_uris: ['http://127.0.0.1/cb'] },
+      { client_id: 'public-bad-placeholder', public: true, client_secret: '${ENV:SSO_STRICT_MISSING_SECRET}', redirect_uris: ['http://127.0.0.1/cb'] }
+    ]
+  }))) ok = false
   if (!ok) {
     console.log('\n严格配置检查失败:存在弱配置仍能启动(或未点名问题变量)')
     process.exit(1)
   }
-  console.log('\n严格配置检查通过:三类弱配置均在监听端口前被拒绝')
+  console.log('\n严格配置检查通过:三类弱配置均在监听端口前被拒绝;公共客户端无 secret 正常启动')
 }
 
 main().catch((error) => {

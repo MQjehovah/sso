@@ -150,6 +150,12 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
     return html(res, 400, messagePage('缺少 scope', '必须包含 openid', false))
   }
 
+  // 公共客户端无密钥,必须用 PKCE 保护授权码流程;机密客户端保持可选(向后兼容)
+  const codeChallenge = q.get('code_challenge') ?? undefined
+  if (client.public === true && !codeChallenge) {
+    return html(res, 400, messagePage('缺少 PKCE 参数', '公共客户端必须使用 PKCE', false))
+  }
+
   const tx: PendingTx = {
     id: randomBytes(16).toString('hex'),
     client_id: client.client_id,
@@ -157,7 +163,7 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
     scope,
     state: q.get('state') ?? undefined,
     nonce: q.get('nonce') ?? undefined,
-    code_challenge: q.get('code_challenge') ?? undefined,
+    code_challenge: codeChallenge,
     created_at: Date.now()
   }
   if (tx.code_challenge && q.get('code_challenge_method') !== 'S256') {
@@ -386,7 +392,10 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
     clientSecret = decodeURIComponent(decoded.slice(i + 1))
   }
   const client = getClient(clientId)
-  if (!client || !clientSecret || !safeEqual(client.client_secret, clientSecret)) {
+  const isPublic = client?.public === true
+  // 公共客户端仅凭 client_id 识别(无 secret);机密客户端维持 Basic/form secret 必填校验
+  const confidentialOk = !!client && !!clientSecret && typeof client.client_secret === 'string' && safeEqual(client.client_secret, clientSecret)
+  if (!client || (!isPublic && !confidentialOk)) {
     audit({ event: 'token', ok: false, ip, detail: '客户端认证失败' })
     return json(res, 401, { error: 'invalid_client' })
   }
@@ -498,6 +507,11 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
   }
   if (codeRecord.client_id !== clientId || codeRecord.redirect_uri !== (form.get('redirect_uri') ?? '')) {
     return json(res, 400, { error: 'invalid_grant', error_description: '授权码与请求不匹配' })
+  }
+
+  // 纵深防御:公共客户端必须走 PKCE(/authorize 已拦截缺 challenge 的授权,防止历史/异常授权码绕过)
+  if (client.public === true && !codeRecord.code_challenge) {
+    return json(res, 400, { error: 'invalid_grant', error_description: '公共客户端必须使用 PKCE' })
   }
 
   // PKCE 校验
