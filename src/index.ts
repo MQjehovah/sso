@@ -5,7 +5,7 @@ import {
   handleAuthorize, handleAuthorizeContinue, handleAuthorizeSwitch, handleDiscovery, handleDingtalkCallback, handleDingtalkStart,
   handleHome,
   handleJwks, handleLoginPage, handleLogout, handlePasswordLogin,
-  handleProfile, handleProfilePassword, handleResetConfirm, handleResetPage, handleResetRequest,
+  handleProfile, handleProfileLogout, handleProfilePassword, handleProfileSwitch, handleResetConfirm, handleResetPage, handleResetRequest,
   handleToken, handleUserinfo
 } from './protocol.ts'
 import { HttpError } from './errors.ts'
@@ -43,6 +43,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (path === '/logout') return handleLogout(req, res, url)
   if (path === '/profile') return handleProfile(req, res)
   if (path === '/profile/password' && req.method === 'POST') return handleProfilePassword(req, res)
+  if (path === '/profile/logout' && req.method === 'POST') return handleProfileLogout(req, res)
+  if (path === '/profile/switch' && req.method === 'POST') return handleProfileSwitch(req, res)
   if (path === '/reset' && req.method === 'GET') return handleResetPage(res)
   if (path === '/reset/request' && req.method === 'POST') return handleResetRequest(req, res)
   if (path === '/reset/confirm' && req.method === 'POST') return handleResetConfirm(req, res)

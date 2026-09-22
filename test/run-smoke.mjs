@@ -449,6 +449,7 @@ async function main() {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: grantPw2.refresh_token, client_id: 'test-web', client_secret: 'test-secret' })
     })
+    const rNewBody = await rNew.json()
     assert('改密后新 refresh_token 仍可用', rNew.ok)
 
     // 客户端认证失败
@@ -706,7 +707,13 @@ async function main() {
       body: `tx=${txNew}&username=10003&password=newpass123&csrf=${csrfNew}`,
       redirect: 'manual'
     })
+    jarNew.absorb(rNewLogin)
     assert('新设密码可登录', (rNewLogin.headers.get('location') ?? '').startsWith(REDIRECT_URI))
+    // 用该授权码换取 token(10003 新 refresh_token),供下方个人页退出登录用例验证吊销
+    const grantNew = await oidc.authorizationCodeGrant(configuration, new URL(rNewLogin.headers.get('location') ?? ''), {
+      expectedState: 'sx', expectedNonce: 'nx', pkceCodeVerifier: vNew
+    })
+    assert('新密码登录的授权码可换取 refresh_token(前置)', typeof grantNew.refresh_token === 'string' && grantNew.refresh_token.length > 20)
 
     // ---- 禁用账号扫码拒绝 ----
     await fetch(`${SSO.replace(String(SSO_PORT), String(MOCK_PORT))}`)?.catch?.(() => {})
@@ -735,6 +742,65 @@ async function main() {
     }
     assert('禁用账号扫码被拒(403 + 提示)', finalBody.includes('账号已禁用'))
     await fetch(`${mockBase}/__set_next_user?user=active`)
+
+    // ---- 个人页:退出登录 / 切换其他账号(POST /profile/logout | /profile/switch) ----
+    // 复用既有会话:jarCur/10004(refresh 取改密后新签的 rNewBody)验证切换;jarNew/10003(grantNew)验证退出登录
+    const profileHtmlCur = await (await ssoFetch(jarCur, `${SSO}/profile`)).text()
+    assert('个人页含退出登录与切换账号两个表单', profileHtmlCur.includes('action="/profile/logout"') && profileHtmlCur.includes('action="/profile/switch"') && profileHtmlCur.includes('退出登录') && profileHtmlCur.includes('切换其他账号'))
+
+    // CSRF 缺失 → 400, 且会话保持有效
+    for (const path of ['/profile/logout', '/profile/switch']) {
+      const rProfileNoCsrf = await ssoFetch(jarCur, `${SSO}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: '',
+        redirect: 'manual'
+      })
+      assert(`个人页 ${path} 缺少 CSRF → 400`, rProfileNoCsrf.status === 400)
+    }
+    const authAfterProfileNoCsrf = await authorizeWithSid(configuration, sso_sid_cur, 'sprof-nocsrf')
+    assert('个人页 CSRF 被拒后会话仍有效', authAfterProfileNoCsrf.status === 200 && authAfterProfileNoCsrf.body.includes('已登录为'))
+
+    // 切换其他账号:302 /login?tab=qr, 旧 sid 失效, refresh_token 不吊销
+    const csrfProfileCur = extractCsrf(profileHtmlCur)
+    const rProfileSwitch = await ssoFetch(jarCur, `${SSO}/profile/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `csrf=${csrfProfileCur}`,
+      redirect: 'manual'
+    })
+    assert('个人页切换账号 → 302 /login?tab=qr', rProfileSwitch.status === 302 && (rProfileSwitch.headers.get('location') ?? '') === '/login?tab=qr')
+    assert('个人页切换账号清除 sso_sid Cookie', (rProfileSwitch.headers.getSetCookie?.() ?? []).some((c) => c.startsWith('sso_sid=;')))
+    const authAfterProfileSwitch = await authorizeWithSid(configuration, sso_sid_cur, 'sprof-sw')
+    assert('个人页切换账号后旧 sso_sid 失效(authorize 回登录页)', authAfterProfileSwitch.status === 302 && !authAfterProfileSwitch.location.includes('code=') && authAfterProfileSwitch.location.startsWith('/login'))
+    const rProfSwitchRefresh = await fetch(`${SSO}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rNewBody.refresh_token, client_id: 'test-web', client_secret: 'test-secret' })
+    })
+    const profSwitchRefreshBody = await rProfSwitchRefresh.json()
+    assert('个人页切换账号不吊销原 refresh_token(仍可刷新)', rProfSwitchRefresh.status === 200 && !!profSwitchRefreshBody.access_token)
+
+    // 退出登录:退出页 + 清 Cookie + refresh_token 吊销
+    const csrfProfileNew = extractCsrf(await (await ssoFetch(jarNew, `${SSO}/profile`)).text())
+    const rProfileLogout = await ssoFetch(jarNew, `${SSO}/profile/logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `csrf=${csrfProfileNew}`,
+      redirect: 'manual'
+    })
+    const profileLogoutBody = await rProfileLogout.text()
+    assert('个人页退出登录 → 已退出登录页', rProfileLogout.status === 200 && profileLogoutBody.includes('已退出登录'))
+    assert('个人页退出登录清除 sso_sid Cookie', (rProfileLogout.headers.getSetCookie?.() ?? []).some((c) => c.startsWith('sso_sid=;')))
+    const authAfterProfileLogout = await authorizeWithSid(configuration, jarNew.cookies.get('sso_sid'), 'sprof-lo')
+    assert('个人页退出登录后旧 sso_sid 失效(authorize 回登录页)', authAfterProfileLogout.status === 302 && !authAfterProfileLogout.location.includes('code=') && authAfterProfileLogout.location.startsWith('/login'))
+    const rProfLogoutRefresh = await fetch(`${SSO}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: grantNew.refresh_token, client_id: 'test-web', client_secret: 'test-secret' })
+    })
+    const profLogoutRefreshBody = await rProfLogoutRefresh.json()
+    assert('个人页退出登录吊销 refresh_token(400 invalid_grant)', rProfLogoutRefresh.status === 400 && profLogoutRefreshBody.error === 'invalid_grant')
 
     // ---- 登出 ----
     await ssoFetch(jar1, `${SSO}/logout`)

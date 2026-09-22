@@ -242,6 +242,34 @@ test('confirmReset: 错码 → 统一失败文案且不写密码', async () => {
   assert.match(evt.detail ?? '', /mismatch/)
 })
 
+test('confirmReset: 限流键与阈值(reset:confirm:<ip>, 10 次/分钟), 正常路径放行', async () => {
+  const calls: Array<[string, number, number]> = []
+  const { deps, codes, setPasswordCalls } = makeDeps({
+    rateLimit: (key, limit, windowMs) => { calls.push([key, limit, windowMs]); return true }
+  })
+  codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.52' }, deps)
+  assert.deepEqual(res, { ok: true })
+  assert.deepEqual(calls, [['reset:confirm:10.0.0.52', 10, 60_000]])
+  assert.equal(setPasswordCalls.length, 1)
+  assert.equal(codes.peek('1001'), undefined)
+})
+
+test('confirmReset: 限流命中 → 统一失败文案, 不消费验证码且审计限流原因', async () => {
+  const { deps, codes, setPasswordCalls, audits, revoked } = makeDeps({
+    rateLimit: (key, _limit, windowMs) => !(windowMs === 60_000 && key.startsWith('reset:confirm:'))
+  })
+  codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.53')
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.53' }, deps)
+  assert.deepEqual(res, { ok: false, message: RESET_FAIL_MESSAGE })
+  assert.ok(codes.peek('1001'), '限流命中时验证码必须保留')
+  assert.equal(setPasswordCalls.length, 0)
+  assert.deepEqual(revoked(), { sessionsRevoked: 0, tokensRevoked: 0 })
+  const evt = audits.find((e) => e.event === 'reset_confirm' && !e.ok)
+  assert.ok(evt)
+  assert.match(evt.detail ?? '', /限流:reset:confirm:10\.0\.0\.53/)
+})
+
 test('confirmReset: 禁用账号(有邮箱) → 统一失败, 不写密码不踢会话', async () => {
   const disabled = { ...USER, status: 'disabled' as const }
   const { deps, codes, setPasswordCalls, audits, revoked } = makeDeps({

@@ -217,6 +217,10 @@ export async function confirmReset(
     deps.audit({ event: 'reset_confirm', ok: false, sub: auditSub || undefined, ip: input.ip, detail })
     return { ok: false, message: RESET_FAIL_MESSAGE }
   }
+  // 确认限流先于验证码校验(也先于目录查询):挡验证码爆破;命中超限不消费码,统一失败文案不泄露原因
+  if (!deps.rateLimit(`reset:confirm:${input.ip}`, 10, 60_000)) {
+    return fail(`限流:reset:confirm:${input.ip}`)
+  }
   // 长度规则与 /profile/password 对齐(仅要求 ≥8);不符时不消费验证码,且属用户自有输入,给明确提示
   if (input.newPassword.length < 8) {
     deps.audit({ event: 'reset_confirm', ok: false, sub: sub || undefined, ip: input.ip, detail: '新密码少于 8 位' })
