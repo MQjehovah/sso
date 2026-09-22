@@ -511,12 +511,60 @@ async function main() {
     const { payload: claims2 } = await jwtVerify(grant2.id_token, JWKS, { issuer: SSO, audience: 'test-web', nonce: 'n2' })
     assert('确认页 continue 的 code 换 token(sub=10001)', claims2.sub === '10001')
 
+    // 事务一次性(顺序):同一 tx+csrf 再次 continue 必须被拒(第二次无法再签 code)
+    const rContinueAgain = await ssoFetch(jar1, `${SSO}/authorize/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${tx2}&csrf=${csrf2}`,
+      redirect: 'manual'
+    })
+    assert('同一 tx 重复 continue → 400(事务已消费)', rContinueAgain.status === 400 && (await rContinueAgain.text()).includes('登录请求已过期'))
+
+    // 事务一次性(并发):同一 tx+csrf 并发 POST continue,恰一次成功
+    const auConc = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'scc', nonce: 'ncc'
+    })
+    const rConcPage = await ssoFetch(jar1, auConc, { redirect: 'manual' })
+    const concHtml = await rConcPage.text()
+    const txConc = (concHtml.match(/name="tx" value="([^"]+)"/) ?? [])[1] ?? ''
+    const csrfConc = extractCsrf(concHtml)
+    const postConcContinue = () => ssoFetch(jar1, `${SSO}/authorize/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${txConc}&csrf=${csrfConc}`,
+      redirect: 'manual'
+    })
+    const [rc1, rc2] = await Promise.all([postConcContinue(), postConcContinue()])
+    const concCodes = [rc1, rc2].filter((r) => r.status === 302 && (r.headers.get('location') ?? '').includes('code=')).length
+    assert('并发 POST continue 恰一次成功(事务只消费一次)', concCodes === 1 && [rc1.status, rc2.status].includes(400))
+
     // prompt=login 跳过确认页:直接 302 登录页,响应不含确认页 HTML
     const promptUrl = new URL(authUrl2)
     promptUrl.searchParams.set('prompt', 'login')
     const rPrompt = await ssoFetch(jar1, promptUrl, { redirect: 'manual' })
     const promptLoc = rPrompt.headers.get('location') ?? ''
     assert('prompt=login → 302 登录页(不渲染确认页)', rPrompt.status === 302 && promptLoc.startsWith('/login?tx=') && !(await rPrompt.text()).includes('继续以该账号登录'))
+
+    // CSRF 与会话绑定:账号 A(10001/jar1)确认页的 csrf 在账号 B(10004/jarCur)会话下必须被拒
+    const auCross = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'scr', nonce: 'ncr'
+    })
+    const rCrossPage = await ssoFetch(jar1, auCross, { redirect: 'manual' })
+    const crossHtml = await rCrossPage.text()
+    const txCross = (crossHtml.match(/name="tx" value="([^"]+)"/) ?? [])[1] ?? ''
+    const csrfCross = extractCsrf(crossHtml)
+    const postCross = (path) => ssoFetch(jarCur, `${SSO}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${txCross}&csrf=${csrfCross}`,
+      redirect: 'manual'
+    })
+    const rCrossContinue = await postCross('/authorize/continue')
+    const rCrossSwitch = await postCross('/authorize/switch')
+    assert('A 的确认页 csrf 在 B 会话下 continue 被拒(400)', rCrossContinue.status === 400)
+    assert('A 的确认页 csrf 在 B 会话下 switch 被拒(400)', rCrossSwitch.status === 400)
+    const authCrossB = await authorizeWithSid(configuration, sso_sid_cur, 'scr-check')
+    assert('跨会话 CSRF 被拒后 B 会话未被误销毁', authCrossB.status === 200 && authCrossB.body.includes('继续以该账号登录'))
 
     // ---- 使用其他账号:销毁 SSO 会话,但不吊销 refresh token ----
     // 用 sessCtrl(10001 的独立会话);其 refresh 已在上面跨用户隔离用例中轮换为 ctrlBody.refresh_token

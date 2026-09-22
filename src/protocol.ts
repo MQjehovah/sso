@@ -174,7 +174,7 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
     }
     return html(res, 200, sessionConfirmPage({
       txId: tx.id,
-      csrf: issueCsrf(tx.id),
+      csrf: issueCsrf(`${session.sid}:${tx.id}`),
       name: session.name,
       sub: session.sub,
       dept: session.dept,
@@ -184,48 +184,59 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
   redirect(res, `/login?tx=${tx.id}&tab=qr`)
 }
 
-/** continue/switch 共用的事务与 CSRF 校验;失败时已写入响应并返回 null */
-function checkAuthorizeForm(res: import('node:http').ServerResponse, form: Record<string, string>): { txId: string; tx: PendingTx } | null {
+/** continue/switch 共用校验:tx 存在 → 当前会话(无会话先回登录页) → CSRF(绑「sid:tx」);失败时已写响应并返回 null */
+function checkAuthorizeForm(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, form: Record<string, string>): { txId: string; tx: PendingTx; session: SsoSession } | null {
   const txId = form.tx ?? ''
   const tx = takeTx(txId)
   if (!tx) {
     html(res, 400, messagePage('登录请求已过期', '请返回应用重新发起登录', false))
     return null
   }
-  if (!verifyCsrf(txId, form.csrf)) {
+  const cookies = parseCookies(req.headers.cookie)
+  const session = getSession(cookies['sso_sid'])
+  if (!session) {
+    redirect(res, `/login?tx=${txId}&tab=qr`)
+    return null
+  }
+  // CSRF 与会话绑定:token 以「会话 sid + 本次事务 tx」为 seed,防跨会话/跨事务重放
+  if (!verifyCsrf(`${session.sid}:${txId}`, form.csrf)) {
     html(res, 400, messagePage('请求已过期', '页面已过期,请重新打开登录页', false))
     return null
   }
-  return { txId, tx }
+  return { txId, tx, session }
 }
 
 /** 确认页「继续以该账号登录」:与既有静默发码路径等价,取当前会话签发 code */
 export async function handleAuthorizeContinue(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
-  const form = formToObject(await readBody(req))
-  const checked = checkAuthorizeForm(res, form)
-  if (!checked) return
-  const cookies = parseCookies(req.headers.cookie)
-  const session = getSession(cookies['sso_sid'])
-  if (!session) {
-    return redirect(res, `/login?tx=${checked.txId}&tab=qr`)
+  const ip = clientIp(req)
+  if (!rateLimit(`authorize:post:${ip}`, 60, 60_000)) {
+    return html(res, 429, messagePage('请求过于频繁', '请稍后再试', false))
   }
-  issueCodeRedirect(res, checked.tx, session)
+  const form = formToObject(await readBody(req))
+  const checked = checkAuthorizeForm(req, res, form)
+  if (!checked) return
+  issueCodeRedirect(res, checked.tx, checked.session)
 }
 
 /** 确认页「使用其他账号」:仅销毁 SSO 会话(不 revoke refresh token,不影响他在其他业务系统的登录态) */
 export async function handleAuthorizeSwitch(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const ip = clientIp(req)
+  if (!rateLimit(`authorize:post:${ip}`, 60, 60_000)) {
+    return html(res, 429, messagePage('请求过于频繁', '请稍后再试', false))
+  }
   const form = formToObject(await readBody(req))
-  const checked = checkAuthorizeForm(res, form)
+  const checked = checkAuthorizeForm(req, res, form)
   if (!checked) return
-  const cookies = parseCookies(req.headers.cookie)
-  destroySession(cookies['sso_sid'])
+  destroySession(checked.session.sid)
   res.setHeader('Set-Cookie', clearCookie())
-  audit({ event: 'session_switch', ok: true })
+  audit({ event: 'session_switch', ok: true, sub: checked.session.sub, ip })
   redirect(res, `/login?tx=${checked.txId}&tab=qr`)
 }
 
 function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingTx, session: SsoSession): void {
   const code = issueCode(tx, session)
+  // 事务一次性:签发 code 即消费 tx,同一 tx 不能再签第二个 code(重复/并发第二次一律 400)
+  finishTx(tx.id)
   const params = new URLSearchParams({ code, ...(tx.state ? { state: tx.state } : {}) })
   // 认证完成的同一响应下发会话 Cookie(单点登录凭据)
   res.setHeader('Set-Cookie', [
@@ -290,7 +301,6 @@ export async function handlePasswordLogin(req: import('node:http').IncomingMessa
 
   audit({ event: 'login_password', ok: true, sub: user.sub, client_id: tx.client_id, ip })
   const session = createSession(user.sub, user.name, user.dept, 'pwd', user.dingtalkUserId, user.email)
-  finishTx(txId)
   issueCodeRedirect(res, tx, session)
 }
 
@@ -338,7 +348,6 @@ export async function handleDingtalkCallback(req: import('node:http').IncomingMe
     }
     audit({ event: 'login_qr', ok: true, sub: user.sub, client_id: tx.client_id, ip })
     const session = createSession(user.sub, user.name, user.dept, 'qr', user.dingtalkUserId, user.email)
-    finishTx(tx.id)
     issueCodeRedirect(res, tx, session)
   } catch (err) {
     audit({ event: 'login_qr', ok: false, ip, detail: (err as Error).message })

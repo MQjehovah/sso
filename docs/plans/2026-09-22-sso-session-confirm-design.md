@@ -9,10 +9,12 @@
 ## 现状（证据）
 
 - `handleAuthorize`：`session = getSession(cookies['sso_sid'])`，存在即 `issueCodeRedirect`（静默）。
-- `takeTx` 只做 TTL 校验、**不删除** tx（`src/store.ts:239-247`），`finishTx` 才删除；`issueCode`
-  在签发 code 时消费 tx。→ 确认页渲染与后续 POST 可共用同一 tx。
-- CSRF：`issueCsrf(txId)` / `verifyCsrf(txId, token)`（`src/csrf.ts`），登录表单即用此模式
-  （`protocol.ts:227`）。
+- `takeTx` 只做 TTL 校验、**不删除** tx（`src/store.ts:239-247`）；`issueCodeRedirect` 在签发 code
+  后调用 `finishTx` 消费 tx。→ 确认页渲染与 continue/switch 可共用同一 tx，但同一 tx 只能成功
+  签一次 code（重复/并发 POST 第二次一律 400）。
+- CSRF：`issueCsrf(seed)` / `verifyCsrf(seed, token)`（`src/csrf.ts`）；登录表单以 txId 为 seed
+  （`protocol.ts:227`），**确认页以 `${session.sid}:${tx.id}` 为 seed**，continue/switch 用当前
+  会话 sid 校验，防跨会话/跨事务重放（无会话先回登录页，校验在销毁会话之前）。
 - `destroySession(sid)` + `clearCookie()`（logout 在用，`protocol.ts:507,516`）；
   `GET /logout` 会额外 revoke 该账号 refresh token —— 换账号**不应** revoke（否则把该账号在
   其他业务系统的登录也踢了）。
@@ -30,16 +32,18 @@
 工号 202202100024 · 平台组
 [ 继续以该账号登录 ]   [ 使用其他账号 ]
 ```
-- 「继续」`POST /authorize/continue`：表单 `tx` + `csrf`（`issueCsrf(tx.id)`）
-- 「使用其他账号」`POST /authorize/switch`：表单 `tx` + `csrf`
+- 「继续」`POST /authorize/continue`：表单 `tx` + `csrf`（`issueCsrf(`${session.sid}:${tx.id}`)`）
+- 「使用其他账号」`POST /authorize/switch`：表单 `tx` + `csrf`（同上）
 - 两表单都带隐藏 `tx`（tx 不被渲染消费）
 
-**`POST /authorize/continue`**：校验 tx 存在 + `verifyCsrf(txId, csrf)` → 取当前会话（无会话则回
-登录页）→ `issueCodeRedirect(res, tx, session)`（与原静默路径完全等价）。
+**`POST /authorize/continue`**：校验 tx 存在 → 取当前会话（无会话则回登录页）→
+`verifyCsrf(`${sid}:${txId}`, csrf)` → `issueCodeRedirect(res, tx, session)`（与原静默路径等价，
+签发后 `finishTx` 消费 tx）。两接口均轻量限流 `authorize:post:<ip>`（60 次/分钟）。
 
-**`POST /authorize/switch`**：校验 tx + CSRF → `destroySession(cookies['sso_sid'])` + `clearCookie()`
-→ 302 `/login?tx=<id>&tab=qr`。**不 revoke refresh token**（只退出 SSO 会话，不影响该账号在其他
-业务系统的登录态）；审计 `event: 'session_switch'`。
+**`POST /authorize/switch`**：校验 tx + 会话 + CSRF（绑 `sid:tx`，**校验在销毁之前**）→
+`destroySession(cookies['sso_sid'])` + `clearCookie()` → 302 `/login?tx=<id>&tab=qr`。**不 revoke
+refresh token**（只退出 SSO 会话，不影响该账号在其他业务系统的登录态）；审计
+`event: 'session_switch'`（含 `sub`/`ip`）。
 
 **失败路径**：tx 缺失/过期 → `messagePage('登录请求已过期', ...)`（同登录页现有文案）；
 CSRF 失败 → 400「请求已过期，请重新打开登录页」。
@@ -53,7 +57,8 @@ CSRF 失败 → 400「请求已过期，请重新打开登录页」。
   1. 完成一次密码登录（获得 `sso_sid`）后，对新的 `/authorize` 请求 → 返回确认页 HTML（含
      「已登录为」「继续以该账号登录」「使用其他账号」），且**无 302 Location**；
   2. 从确认页提取 tx 与 csrf → `POST /authorize/continue` → 302 且 Location 带 `code=`；
-     该 code 可正常换 token（沿用既有断言方式）；
+     该 code 可正常换 token（沿用既有断言方式）；同一 tx 重复或并发再 POST → 第二次 400；
+     账号 A 的确认页 csrf 在账号 B 的会话下 POST continue/switch → 400（且 B 会话不被误销毁）；
   3. 另起一轮：`POST /authorize/switch` → 302 到 `/login?tx=...`；随后带旧 Cookie 再访问
      `/authorize` → 应回登录页（302），证明会话已清；
   4. CSRF 错/缺失 → 400；`prompt=login` → 302 登录页（不渲染确认页）。
