@@ -7,13 +7,13 @@ import { config } from './config.ts'
  */
 export interface OidcClient {
   client_id: string
-  /** 机密客户端密钥;公共客户端(public=true)不要求该字段 */
+  /** 机密客户端密钥;与 public=true 互斥(公共客户端不得配置) */
   client_secret?: string
   redirect_uris: string[]
   post_logout_redirect_uris?: string[]
   /** 客户端名称(审计与登录页展示) */
   name?: string
-  /** 公共客户端:无 client_secret,授权必须使用 PKCE(S256);默认 false=机密客户端 */
+  /** 公共客户端:无 client_secret(与 client_secret 互斥),授权必须使用 PKCE(S256);默认 false=机密客户端 */
   public?: boolean
   dept_role_map?: Record<string, string>
   default_role?: string
@@ -60,9 +60,17 @@ export function loadClients(): Map<string, OidcClient> {
   const file = JSON.parse(readFileSync(path, 'utf-8')) as ClientsFile
   const map = new Map<string, OidcClient>()
   for (const c of file.clients ?? []) {
-    // 公共客户端凭 client_id + PKCE 识别,不要求也不展开 secret(有值也跳过,避免误用);
-    // 机密客户端的空/非字符串 secret 是配置错误:会退化成 safeEqual('','') 放行,必须启动即失败
-    if (c.public !== true) {
+    // public 必须是布尔值(与 allowed_audiences 同风格:存在即校验,防 "true"/1 被静默当机密客户端)
+    if (c.public !== undefined && typeof c.public !== 'boolean') {
+      throw new Error(`客户端 ${c.client_id} 的 public 必须是布尔值(参考 clients.example.json)`)
+    }
+    // 公共与机密互斥:public 客户端不得配置 client_secret,否则启动即失败(fail-closed,防止误配被静默忽略)
+    if (c.public === true) {
+      if (c.client_secret !== undefined && c.client_secret !== '') {
+        throw new Error(`客户端 ${c.client_id} 是公共客户端,不得配置 client_secret,请删除(参考 clients.example.json)`)
+      }
+    } else {
+      // 机密客户端的空/非字符串 secret 是配置错误:会退化成 safeEqual('','') 放行,必须启动即失败
       if (typeof c.client_secret !== 'string' || c.client_secret === '') {
         throw new Error(`客户端 ${c.client_id} 的 client_secret 缺失或为空(参考 clients.example.json)`)
       }

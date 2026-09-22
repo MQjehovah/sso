@@ -112,17 +112,26 @@ test('公共客户端(public=true)无 client_secret 可加载', () => {
   assert.equal(client.client_secret, undefined)
 })
 
-test('公共客户端即使写了 client_secret 占位也不展开', () => {
+test('公共客户端配置 client_secret(占位/字面量)→ 加载失败(fail-closed)', () => {
   delete process.env.TEST_SECRET_MISSING
-  const r = loadClientsWith({ client_id: 'pub', public: true, client_secret: '${ENV:TEST_SECRET_MISSING}', redirect_uris: [] })
-  assert.equal(r.status, 0, r.stderr)
-  const client = JSON.parse(r.stdout.trim())
-  assert.equal(client.client_secret, '${ENV:TEST_SECRET_MISSING}')
+  for (const secret of ['${ENV:TEST_SECRET_MISSING}', 'literal-secret']) {
+    const r = loadClientsWith({ client_id: 'pub', public: true, client_secret: secret, redirect_uris: [] })
+    assert.notEqual(r.status, 0, secret)
+    assert.match(r.stderr, /不得配置 client_secret/, secret)
+  }
 })
 
-test('公共客户端即使写了空 client_secret 也不报错', () => {
+test('公共客户端空 client_secret 视为未配置,可加载', () => {
   const r = loadClientsWith({ client_id: 'pub', public: true, client_secret: '', redirect_uris: [] })
   assert.equal(r.status, 0, r.stderr)
+})
+
+test('public 非布尔值抛错', () => {
+  for (const bad of ['true', 1, null]) {
+    const r = loadClientsWith({ client_id: 'pub', public: bad, redirect_uris: [] })
+    assert.notEqual(r.status, 0, String(bad))
+    assert.match(r.stderr, /public 必须是布尔值/)
+  }
 })
 
 test('非 public 缺 client_secret 仍抛错', () => {

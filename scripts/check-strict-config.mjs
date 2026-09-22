@@ -1,12 +1,13 @@
 /**
  * 弱配置拒绝启动断言(CI 用,也可本地执行:npm run check:strict-config)。
  *
- * 用故意缺失/弱化的配置启动真实服务,断言三类情况都在监听端口前失败:
+ * 用故意缺失/弱化的配置启动真实服务,断言以下弱配置都在监听端口前失败:
  *   1. 缺失 SSO_ISSUER;
  *   2. clients.json 的 client_secret 引用未设置的 ${ENV:...} 变量;
- *   3. clients.json 的 client_secret 为空串。
- * 另加一条正例:public=true 的公共客户端无 client_secret(甚至带无效占位)也必须正常启动
- * —— 公共客户端跳过 secret 占位/空值校验,改用 PKCE。
+ *   3. clients.json 的 client_secret 为空串;
+ *   4. 公共客户端(public=true)配置了非空 client_secret(互斥,fail-closed);
+ *   5. public 字段非布尔值。
+ * 另加一条正例:public=true 的公共客户端不带 client_secret 也必须正常启动(改用 PKCE)。
  * 每个负例都要求:非 0 退出、从未绑定端口、无启动成功日志、输出点名问题变量/中文提示。
  * 脚本不需要任何真实密钥,并自行清理临时目录。
  */
@@ -196,6 +197,18 @@ async function main() {
       setIssuer: true,
       clients: [{ client_id: 'strict-empty', client_secret: '', redirect_uris: ['http://127.0.0.1/cb'] }],
       expected: /client_secret|缺失或为空/
+    },
+    {
+      name: '公共客户端配置 client_secret 拒绝启动(fail-closed)',
+      setIssuer: true,
+      clients: [{ client_id: 'public-with-secret', public: true, client_secret: 'literal-secret', redirect_uris: ['http://127.0.0.1/cb'] }],
+      expected: /不得配置 client_secret|public/
+    },
+    {
+      name: 'public 非布尔值拒绝启动',
+      setIssuer: true,
+      clients: [{ client_id: 'public-bad-type', public: 'true', redirect_uris: ['http://127.0.0.1/cb'] }],
+      expected: /public 必须是布尔值/
     }
   ]
 
@@ -206,8 +219,7 @@ async function main() {
   if (!(await runStartCase({
     name: '公共客户端(public=true)无 secret 允许启动',
     clients: [
-      { client_id: 'public-ok', public: true, redirect_uris: ['http://127.0.0.1/cb'] },
-      { client_id: 'public-bad-placeholder', public: true, client_secret: '${ENV:SSO_STRICT_MISSING_SECRET}', redirect_uris: ['http://127.0.0.1/cb'] }
+      { client_id: 'public-ok', public: true, redirect_uris: ['http://127.0.0.1/cb'] }
     ]
   }))) ok = false
   if (!ok) {

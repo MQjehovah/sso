@@ -76,7 +76,7 @@ npm 脚本:
 | `SSO_SMTP_FROM_NAME` | `零号员工` | 发件人显示名 |
 | `SSO_SMTP_FROM` | 未设置 | 发件地址,默认与 `SSO_SMTP_USERNAME` 相同 |
 | `SSO_RESET_CODE_TTL_SECONDS` | `600` | 自助重置验证码有效期(秒,≥60);邮件正文的分钟数与实际 TTL 同源 |
-| `SSO_SECRET_*` | 无 | 机密客户端密钥,由 `src/clients.ts` 在展开 `clients.json` 的 `${ENV:...}` 占位时读取;未设置或为空串会导致启动失败。公共客户端(`public: true`)不需要密钥。示例见 `.env.example`:`SSO_SECRET_AGENT`、`SSO_SECRET_MARKET`、`SSO_SECRET_RAG`、`SSO_SECRET_ROUTER`、`SSO_SECRET_ZHONGTAI_OA`、`SSO_SECRET_TEST_WEB` |
+| `SSO_SECRET_*` | 无 | 机密客户端密钥,由 `src/clients.ts` 在展开 `clients.json` 的 `${ENV:...}` 占位时读取;未设置或为空串会导致启动失败。公共客户端(`public: true`)与密钥互斥,不得配置。示例见 `.env.example`:`SSO_SECRET_AGENT`、`SSO_SECRET_MARKET`、`SSO_SECRET_RAG`、`SSO_SECRET_ROUTER`、`SSO_SECRET_ZHONGTAI_OA`、`SSO_SECRET_TEST_WEB` |
 
 > 说明:`authorize` 事务 TTL 固定 10 分钟、授权码 TTL 固定 5 分钟,不可通过环境变量调整。
 
@@ -85,7 +85,7 @@ npm 脚本:
 - **不入版本库**:`clients.json` 已加入 `.gitignore`,`clients.example.json` 是模板。请在部署环境本地创建 `clients.json`。
 - **`${ENV:NAME}` 占位**:`client_secret` 支持形如 `${ENV:SSO_SECRET_AGENT}` 的占位,服务启动时由 `src/clients.ts` 展开。**若引用的环境变量缺失或为空串,服务直接启动失败**(避免空 secret 造成鉴权绕过);`${ENV:...}` 格式非法时同样抛错,不会被当作字面量 secret 静默生效。
 - **空/非字符串 secret 被拒绝**:机密客户端(`public` 未置 `true`)的 `client_secret` 缺失、为空串或非字符串都会在加载时抛错并阻止启动。
-- **`public`(公共客户端)**:置为 `true` 时该客户端**不需要** `client_secret`(即使配置了也不会展开 `${ENV:...}` 占位,避免误用);`/authorize` 必须携带 `code_challenge` 且 `code_challenge_method=S256`(否则 400),`/token` 仅凭 `client_id` 识别(授权码必须带正确 `code_verifier`)。refresh_token 与 token-exchange 同样开放,`allowed_audiences` 受众白名单、subject_token `aud === client_id` 等逻辑不变。适用于随安装包分发、无法保管密钥的客户端(如 dashboard)。
+- **`public`(公共客户端)**:置为 `true` 时该客户端**不得配置** `client_secret`(存在且非空串即启动失败,防止误配密钥被静默忽略),`public` 必须为布尔值;`/authorize` 必须携带 `code_challenge` 且 `code_challenge_method=S256`(否则 400),`/token` 仅凭 `client_id` 识别(授权码必须带正确 `code_verifier`)。refresh_token 与 token-exchange 同样开放,`allowed_audiences` 受众白名单、subject_token `aud === client_id` 等逻辑不变。适用于随安装包分发、无法保管密钥的客户端(如 dashboard)。
 - **`refresh_ttl_hours`**:设置该客户端的 refresh token 有效期(小时),默认 `12`;非法值回退为 12。该值决定从**首次授权时间**起算的绝对会话上限,刷新轮换不会延长。
 - **`allowed_audiences`**:允许本客户端通过 token-exchange 换取的目标受众列表(如 `["router"]`);未配置 = 禁止交换。若配置则必须是非空字符串数组,否则启动失败。
 - **生成 secret**:
@@ -174,7 +174,7 @@ npm run key:prune       # 例:[keys] 已退休: ab12...
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # 单元测试(110 个用例)
+npm test            # 单元测试(111 个用例)
 npm run test:smoke  # 端到端烟测(145 条断言),需 test/fixtures/clients.json 与 test/data/users.json 夹具
 ```
 

@@ -942,7 +942,7 @@ async function main() {
     assert('invalid_request 缺失参数路径有失败审计', auditEvents.some((e) => e.event === 'token_exchange' && !e.ok && e.detail === '缺少 subject_token 或 audience'))
 
     // ---- 公共客户端 + PKCE(无 client_secret) ----
-    // 独立第四实例:主实例密码登录限流(10 次/分钟)已被既有用例用满,公共客户端需一次干净的密码登录
+    // 独立第四实例:主实例 pwd 限流仅余约 1 次额度,独立实例避免与既有用例脆弱耦合
     const PUB_PORT = 18094
     const PUB = `http://127.0.0.1:${PUB_PORT}`
     const pubDataDir = new URL('./data-public', import.meta.url)

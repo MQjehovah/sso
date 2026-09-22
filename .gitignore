@@ -1,6 +1,8 @@
 .env
 data/
 keys/
+test/data-*/
+test/keys-*/
 node_modules/
 *.log
 clients.json
