@@ -13,7 +13,8 @@
       "client_secret": "e2e-gateway-secret",
       "name": "员工 AI 工作台(E2E)",
       "redirect_uris": ["http://127.0.0.1:18090/api/auth/oidc/callback"],
-      "default_role": "user"
+      "default_role": "user",
+      "allowed_audiences": ["router"]
     }
   ]
 }

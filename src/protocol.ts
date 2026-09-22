@@ -285,6 +285,66 @@ export async function handleToken(req: import('node:http').IncomingMessage, res:
     return json(res, 401, { error: 'invalid_client' })
   }
 
+  // token-exchange grant(RFC 8693):把本客户端自己的 token 换成目标受众的短期 token
+  if (form.get('grant_type') === 'urn:ietf:params:oauth:grant-type:token-exchange') {
+    const subjectToken = form.get('subject_token') ?? ''
+    const audience = (form.get('audience') ?? '').trim()
+    const allowed = client.allowed_audiences ?? []
+    if (!subjectToken || !audience) {
+      return json(res, 400, { error: 'invalid_request', error_description: '缺少 subject_token 或 audience' })
+    }
+    if (!allowed.includes(audience)) {
+      audit({ event: 'token_exchange', ok: false, client_id: clientId, ip, detail: `audience 未授权: ${audience}` })
+      return json(res, 400, { error: 'invalid_target' })
+    }
+
+    let payload: import('jose').JWTPayload
+    try {
+      const header = decodeProtectedHeader(subjectToken)
+      const pub = getPublicKeyFor(header.kid)
+      if (!pub) throw new Error('unknown kid')
+      const verified = await jwtVerify(subjectToken, pub, { issuer: config.issuer, algorithms: ['RS256'] })
+      payload = verified.payload
+    } catch {
+      audit({ event: 'token_exchange', ok: false, client_id: clientId, ip, detail: 'subject_token 无效/过期' })
+      return json(res, 400, { error: 'invalid_grant', error_description: 'subject_token 无效或已过期' })
+    }
+    if (payload.aud !== clientId || !payload.sub) {
+      audit({ event: 'token_exchange', ok: false, client_id: clientId, ip, detail: 'subject_token 受众不符' })
+      return json(res, 400, { error: 'invalid_grant', error_description: 'subject_token 受众与客户端不符' })
+    }
+
+    const configured = Number(process.env.SSO_EXCHANGE_TTL ?? 3600)
+    const ttl = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 3600
+    const now = Math.floor(Date.now() / 1000)
+    const { privateKey, kid } = await getSigningKey()
+    const accessToken = await new SignJWT({
+      scope: 'openid profile',
+      dept: payload.dept,
+      roles: payload.roles,
+      name: payload.name,
+      ...(payload.email ? { email: payload.email } : {}),
+      ...(payload.dingtalk ? { dingtalk: payload.dingtalk } : {}),
+      act: clientId
+    })
+      .setProtectedHeader({ alg: 'RS256', kid })
+      .setIssuer(config.issuer)
+      .setSubject(payload.sub)
+      .setAudience(audience)
+      .setIssuedAt(now)
+      .setExpirationTime(now + ttl)
+      .sign(privateKey)
+
+    audit({ event: 'token_exchange', ok: true, sub: payload.sub, client_id: clientId, ip })
+    return json(res, 200, {
+      access_token: accessToken,
+      issued_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+      token_type: 'Bearer',
+      expires_in: ttl,
+      scope: 'openid profile'
+    })
+  }
+
   // refresh_token grant:校验并轮换,签发新 token 组
   if (form.get('grant_type') === 'refresh_token') {
     const old = consumeRefreshToken(form.get('refresh_token') ?? '', clientId)

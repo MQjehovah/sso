@@ -108,10 +108,10 @@ async function waitHealth(url, tries = 50) {
   return false
 }
 
-/** 走一遍密码通道(authorize → login/password → token),返回 /token 响应体;用于第二实例的 TTL 覆盖验证 */
-async function passwordCodeGrant(base, username, password) {
+/** 走一遍密码通道(authorize → login/password → token),返回 /token 响应体;用于第二实例的 TTL 覆盖验证与 token-exchange 用例 */
+async function passwordCodeGrant(base, username, password, clientId = 'test-web', clientSecret = 'test-secret', redirectUri = REDIRECT_URI) {
   const jar = new Jar()
-  const authUrl = `${base}/authorize?client_id=test-web&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=openid&state=ttl&nonce=ttl`
+  const authUrl = `${base}/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid&state=ttl&nonce=ttl`
   const rAuth = await ssoFetch(jar, authUrl, { redirect: 'manual' })
   const tx = new URL(rAuth.headers.get('location'), base).searchParams.get('tx')
   const csrf = await csrfForLogin(jar, base, tx)
@@ -125,7 +125,7 @@ async function passwordCodeGrant(base, username, password) {
   const res = await fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: REDIRECT_URI, client_id: 'test-web', client_secret: 'test-secret' })
+    body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, client_id: clientId, client_secret: clientSecret })
   })
   return res.json()
 }
@@ -573,6 +573,55 @@ async function main() {
     await ssoFetch(jar1, `${SSO}/logout`)
     const rAfterLogout = await ssoFetch(jar1, authUrl1, { redirect: 'manual' })
     assert('登出后 authorize 需重新登录', (rAfterLogout.headers.get('location') ?? '').startsWith('/login'))
+
+    // ---- token-exchange grant(RFC 8693):dashboard-gateway 把自己的 id_token 换成 aud=router 的 token ----
+    const DG_REDIRECT_URI = 'http://127.0.0.1:18090/api/auth/oidc/callback'
+    const dgTokens = await passwordCodeGrant(SSO, '10001', 'pass123', 'dashboard-gateway', 'e2e-gateway-secret', DG_REDIRECT_URI)
+    assert('dashboard-gateway 授权码换取 id_token(前置)', typeof dgTokens.id_token === 'string' && dgTokens.id_token.length > 20)
+
+    const EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange'
+    const EXCHANGE_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:id_token'
+    const exchange = (fields) => fetch(`${SSO}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: EXCHANGE_GRANT, ...fields })
+    })
+
+    // 正常交换
+    const exRes = await exchange({
+      subject_token: dgTokens.id_token,
+      subject_token_type: EXCHANGE_TOKEN_TYPE,
+      audience: 'router',
+      client_id: 'dashboard-gateway',
+      client_secret: 'e2e-gateway-secret'
+    })
+    const exBody = await exRes.json()
+    assert('token 交换成功(200 含 access_token/issued_token_type/expires_in)', exRes.status === 200 && typeof exBody.access_token === 'string' && exBody.issued_token_type === 'urn:ietf:params:oauth:token-type:access_token' && typeof exBody.expires_in === 'number')
+    const exClaims = typeof exBody.access_token === 'string'
+      ? (await jwtVerify(exBody.access_token, JWKS, { issuer: SSO, audience: 'router' })).payload
+      : {}
+    assert('交换所得 JWT aud=router / sub=工号 / act=dashboard-gateway', exClaims.aud === 'router' && exClaims.sub === '10001' && exClaims.act === 'dashboard-gateway')
+    assert('交换所得 JWT 继承身份 claims(name/dept/roles)', exClaims.name === '张三' && exClaims.dept === '平台组' && JSON.stringify(exClaims.roles) === JSON.stringify(['user']))
+
+    // audience 未授权(不在 allowed_audiences)
+    const exBadAud = await exchange({ subject_token: dgTokens.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'market', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
+    const exBadAudBody = await exBadAud.json()
+    assert('audience 未授权 → 400 invalid_target', exBadAud.status === 400 && exBadAudBody.error === 'invalid_target')
+
+    // subject_token 篡改
+    const exTampered = await exchange({ subject_token: 'not-a-jwt', subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
+    const exTamperedBody = await exTampered.json()
+    assert('subject_token 篡改 → 400 invalid_grant', exTampered.status === 400 && exTamperedBody.error === 'invalid_grant' && exTamperedBody.error_description === 'subject_token 无效或已过期')
+
+    // subject_token 受众不符(用 test-web 的 id_token,aud=test-web 而非 dashboard-gateway)
+    const exWrongSub = await exchange({ subject_token: grant1.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
+    const exWrongSubBody = await exWrongSub.json()
+    assert('subject_token 受众不符 → 400 invalid_grant', exWrongSub.status === 400 && exWrongSubBody.error === 'invalid_grant' && exWrongSubBody.error_description === 'subject_token 受众与客户端不符')
+
+    // 客户端未认证(不带 client_secret)
+    const exNoAuth = await exchange({ subject_token: dgTokens.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway' })
+    const exNoAuthBody = await exNoAuth.json()
+    assert('token 交换客户端未认证 → 401 invalid_client', exNoAuth.status === 401 && exNoAuthBody.error === 'invalid_client')
 
     // ---- TTL 可配置覆盖:第二实例(access 60s / id 120s)证明环境变量真正生效 ----
     const sso2Base = `http://127.0.0.1:${SSO_TTL_PORT}`
