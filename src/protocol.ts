@@ -18,7 +18,7 @@ import { createMailer } from './mailer.ts'
 import { createResetCodeStore, requestReset, confirmReset, type ResetDeps } from './reset.ts'
 import { buildScanUrl, newDingtalkState, exchangeIdentity } from './dingtalk.ts'
 import { config as cfgAll } from './config.ts'
-import { homePage, loginPage, messagePage, profilePage, resetPage } from './render.ts'
+import { homePage, loginPage, messagePage, profilePage, resetPage, sessionConfirmPage } from './render.ts'
 import { issueCsrf, verifyCsrf } from './csrf.ts'
 
 const directory = createDirectory()
@@ -165,13 +165,63 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
   }
   putTx(tx)
 
-  // 已有 SSO 会话 → 直接发 code(单点登录的落点)
+  // 已有 SSO 会话 → 会话确认页(不再静默发码);prompt=login 可强制重新登录
   const cookies = parseCookies(req.headers.cookie)
   const session = getSession(cookies['sso_sid'])
   if (session) {
-    return issueCodeRedirect(res, tx, session)
+    if (q.get('prompt') === 'login') {
+      return redirect(res, `/login?tx=${tx.id}&tab=qr`)
+    }
+    return html(res, 200, sessionConfirmPage({
+      txId: tx.id,
+      csrf: issueCsrf(tx.id),
+      name: session.name,
+      sub: session.sub,
+      dept: session.dept,
+      clientName: client?.name
+    }))
   }
   redirect(res, `/login?tx=${tx.id}&tab=qr`)
+}
+
+/** continue/switch 共用的事务与 CSRF 校验;失败时已写入响应并返回 null */
+function checkAuthorizeForm(res: import('node:http').ServerResponse, form: Record<string, string>): { txId: string; tx: PendingTx } | null {
+  const txId = form.tx ?? ''
+  const tx = takeTx(txId)
+  if (!tx) {
+    html(res, 400, messagePage('登录请求已过期', '请返回应用重新发起登录', false))
+    return null
+  }
+  if (!verifyCsrf(txId, form.csrf)) {
+    html(res, 400, messagePage('请求已过期', '页面已过期,请重新打开登录页', false))
+    return null
+  }
+  return { txId, tx }
+}
+
+/** 确认页「继续以该账号登录」:与既有静默发码路径等价,取当前会话签发 code */
+export async function handleAuthorizeContinue(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const form = formToObject(await readBody(req))
+  const checked = checkAuthorizeForm(res, form)
+  if (!checked) return
+  const cookies = parseCookies(req.headers.cookie)
+  const session = getSession(cookies['sso_sid'])
+  if (!session) {
+    return redirect(res, `/login?tx=${checked.txId}&tab=qr`)
+  }
+  issueCodeRedirect(res, checked.tx, session)
+}
+
+/** 确认页「使用其他账号」:仅销毁 SSO 会话(不 revoke refresh token,不影响他在其他业务系统的登录态) */
+export async function handleAuthorizeSwitch(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
+  const form = formToObject(await readBody(req))
+  const checked = checkAuthorizeForm(res, form)
+  if (!checked) return
+  const cookies = parseCookies(req.headers.cookie)
+  destroySession(cookies['sso_sid'])
+  res.setHeader('Set-Cookie', clearCookie())
+  audit({ event: 'session_switch', ok: true })
+  redirect(res, `/login?tx=${checked.txId}&tab=qr`)
 }
 
 function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingTx, session: SsoSession): void {

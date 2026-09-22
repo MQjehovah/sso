@@ -2,7 +2,7 @@
  * SSO 全流程烟测:
  *   启动 mock 钉钉 + SSO(文件目录),用 openid-client 标准客户端库走完整 OIDC 流程。
  * 覆盖:discovery/JWKS、扫码登录、密码登录、错误凭据、禁用账号拒绝、code 一次性、
- *       单点登录、密码激活、登出、客户端认证失败。
+ *       会话确认页(continue/switch/prompt=login)、密码激活、登出、客户端认证失败。
  */
 import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
@@ -162,13 +162,13 @@ async function passwordLogin(configuration, username, password, state) {
   return { jar, sid: jar.cookies.get('sso_sid') ?? '', grant }
 }
 
-/** 用给定 sso_sid 走 /authorize,返回状态码与 Location */
+/** 用给定 sso_sid 走 /authorize,返回状态码、Location 与响应体 */
 async function authorizeWithSid(configuration, sid, state) {
   const authUrl = oidc.buildAuthorizationUrl(configuration, {
     redirect_uri: REDIRECT_URI, scope: 'openid', state, nonce: state
   })
   const res = await fetch(authUrl, { headers: { Cookie: `sso_sid=${sid}` }, redirect: 'manual' })
-  return { status: res.status, location: res.headers.get('location') ?? '' }
+  return { status: res.status, location: res.headers.get('location') ?? '', body: await res.text() }
 }
 
 // ---- 主流程 ----
@@ -405,7 +405,7 @@ async function main() {
     const authOld = await authorizeWithSid(configuration, sso_sid_old, 'spw-check-old')
     assert('改密后旧端 sso_sid 被吊销(authorize 不发 code)', authOld.status === 302 && !authOld.location.includes('code=') && authOld.location.startsWith('/login'))
     const authCur = await authorizeWithSid(configuration, sso_sid_cur, 'spw-check-cur')
-    assert('改密后当前端 sso_sid 仍有效(authorize 发 code)', authCur.status === 302 && authCur.location.startsWith(REDIRECT_URI) && authCur.location.includes('code='))
+    assert('改密后当前端 sso_sid 仍有效(进入会话确认页)', authCur.status === 200 && !authCur.location && authCur.body.includes('已登录为'))
 
     const rOld = await fetch(`${SSO}/token`, {
       method: 'POST',
@@ -459,7 +459,8 @@ async function main() {
     })
     assert('客户端密钥错误 → 401', badClient.status === 401)
 
-    // ---- 单点登录(同会话第二次 authorize 免登录) ----
+    // ---- 会话确认页:已有会话不再静默发码(continue/switch/prompt=login) ----
+    // 沿用 jar1 已建立的 10001 密码会话;不新增密码登录,避免主实例限流(10 次/分钟)
     const verifier2 = oidc.randomPKCECodeVerifier()
     const authUrl2 = oidc.buildAuthorizationUrl(configuration, {
       redirect_uri: REDIRECT_URI,
@@ -470,14 +471,84 @@ async function main() {
       code_challenge_method: 'S256'
     })
     const r2 = await ssoFetch(jar1, authUrl2, { redirect: 'manual' })
-    const cbUrl2 = r2.headers.get('location') ?? ''
-    assert('单点登录:第二次 authorize 直接发 code', r2.status === 302 && cbUrl2.startsWith(REDIRECT_URI) && cbUrl2.includes('code='))
+    const confirmHtml = await r2.text()
+    assert('已有会话 → 200 会话确认页(无 302)', r2.status === 200 && !r2.headers.get('location'))
+    assert('确认页含账号与两种选择', confirmHtml.includes('已登录为') && confirmHtml.includes('继续以该账号登录') && confirmHtml.includes('使用其他账号'))
+    const tx2 = (confirmHtml.match(/name="tx" value="([^"]+)"/) ?? [])[1] ?? ''
+    const csrf2 = extractCsrf(confirmHtml)
+    assert('确认页含 tx 与 csrf 隐藏字段', !!tx2 && !!csrf2)
+
+    // 失败路径:缺 CSRF → 400;事务不存在 → 400(且不消耗既有事务)
+    const rContinueNoCsrf = await ssoFetch(jar1, `${SSO}/authorize/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${tx2}`,
+      redirect: 'manual'
+    })
+    assert('continue 缺少 CSRF → 400', rContinueNoCsrf.status === 400)
+    const rContinueBadTx = await ssoFetch(jar1, `${SSO}/authorize/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=deadbeef&csrf=${csrf2}`,
+      redirect: 'manual'
+    })
+    assert('continue 无效事务 → 400 登录请求已过期', rContinueBadTx.status === 400 && (await rContinueBadTx.text()).includes('登录请求已过期'))
+
+    // 继续以该账号登录 → 302 携带 code,可正常换 token
+    const rContinue = await ssoFetch(jar1, `${SSO}/authorize/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${tx2}&csrf=${csrf2}`,
+      redirect: 'manual'
+    })
+    const cbUrl2 = rContinue.headers.get('location') ?? ''
+    assert('continue → 302 携带 code 回调', rContinue.status === 302 && cbUrl2.startsWith(REDIRECT_URI) && cbUrl2.includes('code='))
     const grant2 = await oidc.authorizationCodeGrant(configuration, new URL(cbUrl2), {
       expectedState: 'st2',
       expectedNonce: 'n2',
       pkceCodeVerifier: verifier2
     })
-    assert('单点 code 换 token 成功', !!grant2.id_token)
+    const { payload: claims2 } = await jwtVerify(grant2.id_token, JWKS, { issuer: SSO, audience: 'test-web', nonce: 'n2' })
+    assert('确认页 continue 的 code 换 token(sub=10001)', claims2.sub === '10001')
+
+    // prompt=login 跳过确认页:直接 302 登录页,响应不含确认页 HTML
+    const promptUrl = new URL(authUrl2)
+    promptUrl.searchParams.set('prompt', 'login')
+    const rPrompt = await ssoFetch(jar1, promptUrl, { redirect: 'manual' })
+    const promptLoc = rPrompt.headers.get('location') ?? ''
+    assert('prompt=login → 302 登录页(不渲染确认页)', rPrompt.status === 302 && promptLoc.startsWith('/login?tx=') && !(await rPrompt.text()).includes('继续以该账号登录'))
+
+    // ---- 使用其他账号:销毁 SSO 会话,但不吊销 refresh token ----
+    // 用 sessCtrl(10001 的独立会话);其 refresh 已在上面跨用户隔离用例中轮换为 ctrlBody.refresh_token
+    const jarCtrl = sessCtrl.jar
+    const vSwitch = oidc.randomPKCECodeVerifier()
+    const auSwitch = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI, scope: 'openid', state: 'ssw', nonce: 'nsw',
+      code_challenge: await oidc.calculatePKCECodeChallenge(vSwitch), code_challenge_method: 'S256'
+    })
+    const rSwPage = await ssoFetch(jarCtrl, auSwitch, { redirect: 'manual' })
+    const swHtml = await rSwPage.text()
+    assert('切换前会话有效(确认页)', rSwPage.status === 200 && swHtml.includes('继续以该账号登录'))
+    const txSw = (swHtml.match(/name="tx" value="([^"]+)"/) ?? [])[1] ?? ''
+    const csrfSw = extractCsrf(swHtml)
+    const rSwitch = await ssoFetch(jarCtrl, `${SSO}/authorize/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `tx=${txSw}&csrf=${csrfSw}`,
+      redirect: 'manual'
+    })
+    const switchLoc = rSwitch.headers.get('location') ?? ''
+    assert('switch → 302 登录页', rSwitch.status === 302 && switchLoc.startsWith(`/login?tx=${txSw}`))
+    assert('switch 响应清除 sso_sid Cookie', (rSwitch.headers.getSetCookie?.() ?? []).some((c) => c.startsWith('sso_sid=;')))
+    const authAfterSwitch = await authorizeWithSid(configuration, sessCtrl.sid, 'ssw-check')
+    assert('switch 后旧 sso_sid 已失效(authorize 回登录页)', authAfterSwitch.status === 302 && !authAfterSwitch.location.includes('code=') && authAfterSwitch.location.startsWith('/login'))
+    const rSwRefresh = await fetch(`${SSO}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: ctrlBody.refresh_token, client_id: 'test-web', client_secret: 'test-secret' })
+    })
+    const swRefreshBody = await rSwRefresh.json()
+    assert('switch 不吊销原账号 refresh_token(仍可刷新)', rSwRefresh.status === 200 && !!swRefreshBody.access_token)
 
     // ---- 扫码通道(新会话) ----
     const jar2 = new Jar()

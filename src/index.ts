@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { config } from './config.ts'
 import { loadClients } from './clients.ts'
 import {
-  handleAuthorize, handleDiscovery, handleDingtalkCallback, handleDingtalkStart,
+  handleAuthorize, handleAuthorizeContinue, handleAuthorizeSwitch, handleDiscovery, handleDingtalkCallback, handleDingtalkStart,
   handleHome,
   handleJwks, handleLoginPage, handleLogout, handlePasswordLogin,
   handleProfile, handleProfilePassword, handleResetConfirm, handleResetPage, handleResetRequest,
@@ -32,6 +32,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (path === '/.well-known/jwks.json') return handleJwks(res)
 
   if (path === '/authorize') return handleAuthorize(req, res, url)
+  if (path === '/authorize/continue' && req.method === 'POST') return handleAuthorizeContinue(req, res)
+  if (path === '/authorize/switch' && req.method === 'POST') return handleAuthorizeSwitch(req, res)
   if (path === '/login' && req.method === 'GET') return handleLoginPage(req, res, url)
   if (path === '/login/password' && req.method === 'POST') return handlePasswordLogin(req, res, url)
   if (path === '/dingtalk/start') return handleDingtalkStart(res, url)

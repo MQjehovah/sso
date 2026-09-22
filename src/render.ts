@@ -82,6 +82,37 @@ export function loginPage(opts: {
 </body></html>`
 }
 
+/** 会话确认页:已有 SSO 会话时让用户确认继续用该账号,或换账号(销毁会话回登录页) */
+export function sessionConfirmPage(opts: {
+  txId: string
+  csrf: string
+  name: string
+  sub: string
+  dept: string
+  clientName?: string
+}): string {
+  const { txId, csrf, name, sub, dept, clientName } = opts
+  const hidden = `<input type="hidden" name="tx" value="${escapeHtml(txId)}" />
+    <input type="hidden" name="csrf" value="${escapeHtml(csrf)}" />`
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>确认登录账号</title>
+<style>${BASE_STYLE}</style></head><body>
+<div class="card">
+  <div class="logo">${LOGO_SVG}</div>
+  <h1>已登录为 ${escapeHtml(name)}</h1>
+  <div class="sub">工号 ${escapeHtml(sub)} · ${escapeHtml(dept)}${clientName ? ' · ' + escapeHtml(clientName) : ''}</div>
+  <form method="post" action="/authorize/continue">
+    ${hidden}
+    <button class="btn primary" type="submit">继续以该账号登录</button>
+  </form>
+  <form method="post" action="/authorize/switch" style="margin-top:10px">
+    ${hidden}
+    <button class="btn" type="submit">使用其他账号</button>
+  </form>
+  <div class="hint">不是本人?选择「使用其他账号」退出当前统一身份后重新登录</div>
+</div>
+</body></html>`
+}
+
 /** 自助重置页:step1 工号 → 发码;step2 验证码 + 新密码。无会话/事务,不走 CSRF token 机制 */
 export function resetPage(opts: { step: 1 | 2; sub?: string; notice?: string; error?: string }): string {
   const { step, sub, notice, error } = opts
