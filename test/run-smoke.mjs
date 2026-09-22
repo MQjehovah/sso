@@ -85,6 +85,13 @@ function extractCsrf(html) {
   return m ? m[1] : ''
 }
 
+/** 解出 JWT payload、按 patch 修改后 base64url 重编码并拼回(不重签名):构造结构合法但验签必失败的篡改样本 */
+function tamperJwtPayload(token, patch) {
+  const [header, payload, signature] = token.split('.')
+  const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8'))
+  return [header, Buffer.from(JSON.stringify({ ...claims, ...patch }), 'utf-8').toString('base64url'), signature].join('.')
+}
+
 /** 取密码登录页并解析其 tx 绑定的 CSRF token */
 async function csrfForLogin(jar, base, tx) {
   return extractCsrf(await (await ssoFetch(jar, `${base}/login?tx=${tx}&tab=pwd`)).text())
@@ -602,16 +609,21 @@ async function main() {
       : {}
     assert('交换所得 JWT aud=router / sub=工号 / act=dashboard-gateway', exClaims.aud === 'router' && exClaims.sub === '10001' && exClaims.act === 'dashboard-gateway')
     assert('交换所得 JWT 继承身份 claims(name/dept/roles)', exClaims.name === '张三' && exClaims.dept === '平台组' && JSON.stringify(exClaims.roles) === JSON.stringify(['user']))
+    assert('交换所得 JWT 继承 dingtalk claim(与目录一致)', exClaims.dingtalk === '10001')
+    assert('token 交换响应 expires_in=3600', exBody.expires_in === 3600)
+    assert('交换所得 JWT TTL 为 3600 秒', exClaims.exp - exClaims.iat === 3600)
 
     // audience 未授权(不在 allowed_audiences)
     const exBadAud = await exchange({ subject_token: dgTokens.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'market', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
     const exBadAudBody = await exBadAud.json()
     assert('audience 未授权 → 400 invalid_target', exBadAud.status === 400 && exBadAudBody.error === 'invalid_target')
 
-    // subject_token 篡改
-    const exTampered = await exchange({ subject_token: 'not-a-jwt', subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
+    // subject_token 篡改:改 payload.sub 后重编码(不重签名),验签实现必须拒绝
+    const tampered = tamperJwtPayload(dgTokens.id_token, { sub: '99999' })
+    assert('篡改样本可被无验签解码(证明 payload 已改、仅签名失效)', decodeJwt(tampered).sub === '99999')
+    const exTampered = await exchange({ subject_token: tampered, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
     const exTamperedBody = await exTampered.json()
-    assert('subject_token 篡改 → 400 invalid_grant', exTampered.status === 400 && exTamperedBody.error === 'invalid_grant' && exTamperedBody.error_description === 'subject_token 无效或已过期')
+    assert('篡改 subject_token(未重签名) → 400 invalid_grant', exTampered.status === 400 && exTamperedBody.error === 'invalid_grant' && exTamperedBody.error_description === 'subject_token 无效或已过期')
 
     // subject_token 受众不符(用 test-web 的 id_token,aud=test-web 而非 dashboard-gateway)
     const exWrongSub = await exchange({ subject_token: grant1.id_token, subject_token_type: EXCHANGE_TOKEN_TYPE, audience: 'router', client_id: 'dashboard-gateway', client_secret: 'e2e-gateway-secret' })
