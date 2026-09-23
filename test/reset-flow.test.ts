@@ -231,7 +231,7 @@ test('requestReset: 审计记录目录规范 sub(手机号输入 → 工号)', a
 test('confirmReset: 错码 → 统一失败文案且不写密码', async () => {
   const { deps, codes, setPasswordCalls, audits, revoked } = makeDeps()
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '000000', newPassword: 'newpass123', ip: '10.0.0.35' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '000000', newPassword: 'Newpass1!', ip: '10.0.0.35' }, deps)
   assert.deepEqual(res, { ok: false, message: RESET_FAIL_MESSAGE })
   assert.equal(setPasswordCalls.length, 0)
   assert.equal(revoked().sessionsRevoked, 0)
@@ -240,6 +240,7 @@ test('confirmReset: 错码 → 统一失败文案且不写密码', async () => {
   assert.ok(evt)
   assert.equal(evt.ok, false)
   assert.match(evt.detail ?? '', /mismatch/)
+  assert.equal(codes.peek('1001')?.attempts, 1, '错码累计 attempts, 记录保留')
 })
 
 test('confirmReset: 限流键与阈值(reset:confirm:<ip>, 10 次/分钟), 正常路径放行', async () => {
@@ -248,7 +249,7 @@ test('confirmReset: 限流键与阈值(reset:confirm:<ip>, 10 次/分钟), 正�
     rateLimit: (key, limit, windowMs) => { calls.push([key, limit, windowMs]); return true }
   })
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.52' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.52' }, deps)
   assert.deepEqual(res, { ok: true })
   assert.deepEqual(calls, [['reset:confirm:10.0.0.52', 10, 60_000]])
   assert.equal(setPasswordCalls.length, 1)
@@ -260,7 +261,7 @@ test('confirmReset: 限流命中 → 统一失败文案, 不消费验证码且�
     rateLimit: (key, _limit, windowMs) => !(windowMs === 60_000 && key.startsWith('reset:confirm:'))
   })
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.53')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.53' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.53' }, deps)
   assert.deepEqual(res, { ok: false, message: RESET_FAIL_MESSAGE })
   assert.ok(codes.peek('1001'), '限流命中时验证码必须保留')
   assert.equal(setPasswordCalls.length, 0)
@@ -276,26 +277,28 @@ test('confirmReset: 禁用账号(有邮箱) → 统一失败, 不写密码不踢
     directory: { findByIdentifier: async () => disabled }
   })
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.51' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.51' }, deps)
   assert.deepEqual(res, { ok: false, message: RESET_FAIL_MESSAGE })
   assert.equal(setPasswordCalls.length, 0)
   assert.deepEqual(revoked(), { sessionsRevoked: 0, tokensRevoked: 0 })
   assert.ok(audits.some((e) => e.event === 'reset_confirm' && !e.ok && (e.detail ?? '').includes('账号已禁用')))
 })
 
-test('confirmReset: 密码不足 8 位 → 明确文案且不消费验证码', async () => {
+test('confirmReset: 弱密码预检 → 具体缺项提示, 不消费验证码且不计 attempts', async () => {
   const { deps, codes, setPasswordCalls, audits } = makeDeps()
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
   const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'short', ip: '10.0.0.36' }, deps)
-  assert.deepEqual(res, { ok: false, message: '新密码至少 8 位' })
-  assert.ok(codes.peek('1001'), '长度不符时验证码必须保留')
+  assert.deepEqual(res, { ok: false, message: '新密码不符合要求: 不足 8 位、缺大写字母、缺数字、缺特殊字符' })
+  assert.ok(codes.peek('1001'), '强度预检失败时验证码必须保留')
+  assert.equal(codes.peek('1001')?.attempts, 0, '强度预检失败不得计入错码 attempts')
   assert.equal(setPasswordCalls.length, 0)
-  assert.ok(audits.some((e) => e.event === 'reset_confirm' && !e.ok))
+  const evt = audits.find((e) => e.event === 'reset_confirm' && !e.ok)
+  assert.match(evt?.detail ?? '', /新密码不符合策略/)
 })
 
-test('confirmReset: 长度规则与 profile 一致(仅要求 ≥8, 无上限)', async () => {
+test('confirmReset: 强密码无长度上限(65 位合规密码可写)', async () => {
   const { deps, codes, setPasswordCalls } = makeDeps()
-  const long = 'x'.repeat(65)
+  const long = 'Aa1!' + 'x'.repeat(61)
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
   const res = await confirmReset({ sub: '1001', code: '123456', newPassword: long, ip: '10.0.0.42' }, deps)
   assert.deepEqual(res, { ok: true })
@@ -305,12 +308,12 @@ test('confirmReset: 长度规则与 profile 一致(仅要求 ≥8, 无上限)', 
 test('confirmReset: 正确码 → 写密码/踢会话与 token/通知/审计 ok=true', async () => {
   const { deps, codes, setPasswordCalls, notices, audits, revoked } = makeDeps()
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.37' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.37' }, deps)
   assert.deepEqual(res, { ok: true })
   assert.equal(setPasswordCalls.length, 1)
   assert.equal(setPasswordCalls[0].user.sub, '1001')
   assert.equal(setPasswordCalls[0].current, null)
-  assert.equal(setPasswordCalls[0].next, 'newpass123')
+  assert.equal(setPasswordCalls[0].next, 'Newpass1!')
   assert.deepEqual(revoked(), { sessionsRevoked: 1, tokensRevoked: 1 })
   assert.equal(notices.length, 1)
   assert.equal(notices[0].to, 'zs@corp.com')
@@ -323,32 +326,32 @@ test('confirmReset: 审计与码校验按目录规范 sub(手机号输入 → �
     directory: { findByIdentifier: async (id) => (id === '13800000001' ? USER : null) }
   })
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '13800000001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.43' }, deps)
+  const res = await confirmReset({ sub: '13800000001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.43' }, deps)
   assert.deepEqual(res, { ok: true })
   assert.equal(setPasswordCalls[0]?.user.sub, '1001')
   assert.equal(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.sub, '1001')
 })
 
-test('confirmReset: revokeTokens 抛错不阻断成功(审计含 revokeError, 通知仍发)', async () => {
+test('confirmReset: revokeTokens 抛错不阻断成功(审计含 postError, 通知仍发)', async () => {
   const { deps, codes, notices, audits, setPasswordCalls, revoked } = makeDeps()
   deps.revokeTokens = () => { throw new Error('磁盘只读') }
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.45' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.45' }, deps)
   assert.deepEqual(res, { ok: true })
   assert.equal(setPasswordCalls.length, 1)
   assert.equal(notices.length, 1)
   assert.equal(revoked().sessionsRevoked, 1)
-  assert.match(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.detail ?? '', /revokeError: revokeTokens: 磁盘只读/)
+  assert.match(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.detail ?? '', /postError: revokeTokens: 磁盘只读/)
 })
 
 test('confirmReset: revokeSessions 抛错时 revokeTokens 仍被调用(独立兜底)', async () => {
   const { deps, codes, audits, revoked } = makeDeps()
   deps.revokeSessions = () => { throw new Error('会话文件写失败') }
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.46' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.46' }, deps)
   assert.deepEqual(res, { ok: true })
   assert.equal(revoked().tokensRevoked, 1, 'revokeSessions 抛错不得跳过 revokeTokens')
-  assert.match(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.detail ?? '', /revokeError: revokeSessions: 会话文件写失败/)
+  assert.match(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.detail ?? '', /postError: revokeSessions: 会话文件写失败/)
 })
 
 test('confirmReset: revokeSessions 与 revokeTokens 同时抛错 → detail 合并两条', async () => {
@@ -356,9 +359,19 @@ test('confirmReset: revokeSessions 与 revokeTokens 同时抛错 → detail 合�
   deps.revokeSessions = () => { throw new Error('A') }
   deps.revokeTokens = () => { throw new Error('B') }
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.49' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.49' }, deps)
   assert.deepEqual(res, { ok: true })
   assert.match(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.detail ?? '', /revokeSessions: A; revokeTokens: B/)
+})
+
+test('confirmReset: consume 落盘抛错不阻断成功(密码已改, 审计 postError)', async () => {
+  const { deps, codes, audits, revoked } = makeDeps()
+  codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
+  deps.codes = { ...codes, consume: () => { throw new Error('磁盘只读') } }
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.55' }, deps)
+  assert.deepEqual(res, { ok: true }, '密码已写入, consume 失败不得把成功翻成失败')
+  assert.deepEqual(revoked(), { sessionsRevoked: 1, tokensRevoked: 1 })
+  assert.match(audits.find((e) => e.event === 'reset_confirm' && e.ok)?.detail ?? '', /postError: consumeResetCode: 磁盘只读/)
 })
 
 test('confirmReset: 目录查无用户 → 统一失败文案且不写密码', async () => {
@@ -366,26 +379,53 @@ test('confirmReset: 目录查无用户 → 统一失败文案且不写密码', a
     directory: { findByIdentifier: async () => null }
   })
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.38' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.38' }, deps)
   assert.deepEqual(res, { ok: false, message: RESET_FAIL_MESSAGE })
   assert.equal(setPasswordCalls.length, 0)
 })
 
-test('confirmReset: setPassword 抛错 → 统一失败文案且不踢会话', async () => {
+test('confirmReset: setPassword 普通错误 → 原 message 返回且验证码不被消费', async () => {
   const { deps, codes, audits, revoked } = makeDeps()
   deps.password.setPassword = async () => { throw new Error('LDAP 不可用') }
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.39' }, deps)
-  assert.deepEqual(res, { ok: false, message: RESET_FAIL_MESSAGE })
-  assert.equal(revoked().sessionsRevoked, 0)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.39' }, deps)
+  assert.deepEqual(res, { ok: false, message: 'LDAP 不可用' })
+  assert.ok(codes.peek('1001'), '目录写失败时验证码必须保留')
+  assert.equal(codes.peek('1001')?.attempts, 0, '正确码校验不计数')
+  assert.deepEqual(revoked(), { sessionsRevoked: 0, tokensRevoked: 0 })
   assert.ok(audits.some((e) => e.event === 'reset_confirm' && !e.ok && (e.detail ?? '').includes('LDAP 不可用')))
+})
+
+test('confirmReset: setPassword 被目录策略拒绝 → 策略文案, 验证码保留; 同一码重试成功', async () => {
+  const { deps, codes, audits, revoked } = makeDeps()
+  let setPasswordCalls = 0
+  let failNext = true
+  deps.password.setPassword = async () => {
+    setPasswordCalls++
+    if (failNext) { failNext = false; throw new Error('设置密码失败: SynoSpecialChar Code: 0x13') }
+  }
+  codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
+
+  const first = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.54' }, deps)
+  assert.deepEqual(first, { ok: false, message: '新密码需包含特殊字符（如 !@#$%^&*）' })
+  assert.ok(codes.peek('1001'), '目录拒绝新密码时验证码必须保留(不被消费)')
+  assert.equal(codes.peek('1001')?.attempts, 0)
+  assert.deepEqual(revoked(), { sessionsRevoked: 0, tokensRevoked: 0 })
+  const failEvt = audits.find((e) => e.event === 'reset_confirm' && !e.ok)
+  assert.match(failEvt?.detail ?? '', /SynoSpecialChar/, '审计保留原始目录错误')
+
+  const retry = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.54' }, deps)
+  assert.deepEqual(retry, { ok: true }, '正确码未被消费, 同一验证码可重试成功')
+  assert.equal(codes.peek('1001'), undefined, '写成功后验证码才被消费')
+  assert.equal(setPasswordCalls, 2)
+  assert.deepEqual(revoked(), { sessionsRevoked: 1, tokensRevoked: 1 })
 })
 
 test('confirmReset: 变更通知抛错不影响成功返回, 审计 ok=true', async () => {
   const { deps, codes, setPasswordCalls, audits, revoked } = makeDeps()
   deps.mailer.sendPasswordChangedNotice = async () => { throw new Error('SMTP 挂了') }
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.40' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.40' }, deps)
   assert.deepEqual(res, { ok: true })
   assert.equal(setPasswordCalls.length, 1)
   assert.deepEqual(revoked(), { sessionsRevoked: 1, tokensRevoked: 1 })
@@ -403,7 +443,7 @@ test('confirmReset: 验证码过期 → 统一失败文案', async () => {
   deps.codes = codes
   codes.issue('1001', 'zs@corp.com', '123456', '10.0.0.1')
   now += 600_000
-  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'newpass123', ip: '10.0.0.41' }, deps)
+  const res = await confirmReset({ sub: '1001', code: '123456', newPassword: 'Newpass1!', ip: '10.0.0.41' }, deps)
   assert.deepEqual(res, { ok: false, message: RESET_FAIL_MESSAGE })
   assert.equal(setPasswordCalls.length, 0)
 })

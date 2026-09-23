@@ -443,7 +443,7 @@ async function main() {
     const rChange = await ssoFetch(jarCur, `${SSO}/profile/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `csrf=${csrfCur}&current_password=pass456&new_password=newpass456&confirm=newpass456`
+      body: `csrf=${csrfCur}&current_password=pass456&new_password=Newpass456!&confirm=Newpass456!`
     })
     assert('改密成功', (await rChange.text()).includes('密码已保存'))
 
@@ -483,7 +483,7 @@ async function main() {
     const rPw2Login = await ssoFetch(jarPw2, `${SSO}/login/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `tx=${txPw2}&username=10004&password=newpass456&csrf=${csrfPw2}`,
+      body: `tx=${txPw2}&username=10004&password=Newpass456!&csrf=${csrfPw2}`,
       redirect: 'manual'
     })
     const cbPw2 = rPw2Login.headers.get('location') ?? ''
@@ -733,7 +733,7 @@ async function main() {
     const rSet = await ssoFetch(jar2, `${SSO}/profile/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `csrf=${csrfQr}&new_password=newpass123&confirm=newpass123`
+      body: `csrf=${csrfQr}&new_password=Newpass123!&confirm=Newpass123!`
     })
     const setBody = await rSet.text()
     assert('扫码后激活密码通道', setBody.includes('密码已保存'))
@@ -750,7 +750,7 @@ async function main() {
     const rNewLogin = await ssoFetch(jarNew, `${SSO}/login/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `tx=${txNew}&username=10003&password=newpass123&csrf=${csrfNew}`,
+      body: `tx=${txNew}&username=10003&password=Newpass123!&csrf=${csrfNew}`,
       redirect: 'manual'
     })
     jarNew.absorb(rNewLogin)
@@ -1114,13 +1114,13 @@ async function main() {
       const resetCode = codeMatch?.[1] ?? ''
 
       const wrongCode = resetCode === '000000' ? '000001' : '000000'
-      const rWrongCode = await postForm('/reset/confirm', `sub=10001&code=${wrongCode}&new_password=newpass789&confirm=newpass789`)
+      const rWrongCode = await postForm('/reset/confirm', `sub=10001&code=${wrongCode}&new_password=Newpass789!&confirm=Newpass789!`)
       assert('错码 → 统一失败文案', (await rWrongCode.text()).includes(RESET_FAIL_MESSAGE))
 
-      const rPwdMismatch = await postForm('/reset/confirm', `sub=10001&code=${resetCode}&new_password=newpass789&confirm=newpass790`)
+      const rPwdMismatch = await postForm('/reset/confirm', `sub=10001&code=${resetCode}&new_password=Newpass789!&confirm=newpass790`)
       assert('两次密码不一致 → 提示且验证码未被消费', (await rPwdMismatch.text()).includes('两次输入的密码不一致'))
 
-      const rResetOk = await postForm('/reset/confirm', `sub=10001&code=${resetCode}&new_password=newpass789&confirm=newpass789`)
+      const rResetOk = await postForm('/reset/confirm', `sub=10001&code=${resetCode}&new_password=Newpass789!&confirm=Newpass789!`)
       assert('正确码重置成功(回执含成功提示)', rResetOk.status === 200 && (await rResetOk.text()).includes('密码已重置'))
 
       const tryPasswordLogin = async (password, state) => {
@@ -1139,7 +1139,7 @@ async function main() {
       }
       const oldPwdLogin = await tryPasswordLogin('pass123', 'sreset-old')
       assert('重置后旧密码登录失败', oldPwdLogin.status === 302 && oldPwdLogin.location.includes('error='))
-      const newPwdLogin = await tryPasswordLogin('newpass789', 'sreset-new')
+      const newPwdLogin = await tryPasswordLogin('Newpass789!', 'sreset-new')
       assert('重置后新密码登录成功(302 携带 code)', newPwdLogin.status === 302 && newPwdLogin.location.startsWith(REDIRECT_URI) && newPwdLogin.location.includes('code='))
 
       // 重置成功必须吊销该用户全部 refresh token

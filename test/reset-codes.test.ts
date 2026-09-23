@@ -76,3 +76,55 @@ test('新实例加载时清理过期条目,不影响有效条目', () => {
   assert.equal(restarted.peek('2002')?.email, 'new@corp.com')
   assert.equal(restarted.verifyAndConsume('2002', '202020'), 'ok')
 })
+
+// ---- verify / consume(密码失败不消费验证码的基础) ----
+
+test('verify 正确码返回 ok 但不删除也不计数, consume 后才删除', () => {
+  const store = createResetCodeStore(dir, { ttlSeconds: 600 })
+  store.issue('3001', 'f@corp.com', '123456', '10.0.0.8')
+  assert.equal(store.verify('3001', '123456'), 'ok')
+  assert.equal(store.verify('3001', '123456'), 'ok', '可重复校验(TTL 内换密码重试)')
+  const rec = store.peek('3001')
+  assert.ok(rec, 'verify 不得删除记录')
+  assert.equal(rec.attempts, 0, '正确码不计数')
+
+  store.consume('3001')
+  assert.equal(store.peek('3001'), undefined)
+  assert.equal(store.verify('3001', '123456'), 'missing')
+})
+
+test('consume 不存在的记录为无害空操作', () => {
+  const store = createResetCodeStore(dir, { ttlSeconds: 600 })
+  store.consume('nobody')
+  assert.equal(store.peek('nobody'), undefined)
+})
+
+test('verify 错码累计 attempts 且记录仍在, 达到上限才作废', () => {
+  const store = createResetCodeStore(dir, { ttlSeconds: 600, maxAttempts: 3 })
+  store.issue('3002', 'g@corp.com', '111111', '10.0.0.9')
+  assert.equal(store.verify('3002', '222222'), 'mismatch')
+  assert.equal(store.peek('3002')?.attempts, 1)
+  assert.equal(store.verify('3002', '222222'), 'mismatch')
+  assert.equal(store.peek('3002')?.attempts, 2, '错码期间记录保留(密码失败不消费语义成立)')
+  assert.equal(store.verify('3002', '222222'), 'too_many')
+  assert.equal(store.peek('3002'), undefined)
+  assert.equal(store.verify('3002', '111111'), 'missing')
+})
+
+test('verify 过期返回 expired 并删除, 与 verifyAndConsume 行为一致', () => {
+  let now = 3_000_000
+  const store = createResetCodeStore(dir, { now: () => now, ttlSeconds: 600 })
+  store.issue('3003', 'h@corp.com', '333333', '10.0.0.10')
+  now += 600_000
+  assert.equal(store.verify('3003', '333333'), 'expired')
+  assert.equal(store.peek('3003'), undefined)
+})
+
+test('verifyAndConsume 语义不变: 正确码删除, 错码累计', () => {
+  const store = createResetCodeStore(dir, { ttlSeconds: 600 })
+  store.issue('3004', 'i@corp.com', '444444', '10.0.0.11')
+  assert.equal(store.verifyAndConsume('3004', '000000'), 'mismatch')
+  assert.equal(store.peek('3004')?.attempts, 1)
+  assert.equal(store.verifyAndConsume('3004', '444444'), 'ok')
+  assert.equal(store.peek('3004'), undefined)
+})

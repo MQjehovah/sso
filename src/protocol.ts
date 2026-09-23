@@ -16,6 +16,7 @@ import { createDirectory } from './directory.ts'
 import { createPasswordVerifier } from './password.ts'
 import { createMailer } from './mailer.ts'
 import { createResetCodeStore, requestReset, confirmReset, type ResetDeps } from './reset.ts'
+import { checkPasswordStrength, describePasswordIssues, friendlyPasswordError } from './password-policy.ts'
 import { buildScanUrl, newDingtalkState, exchangeIdentity } from './dingtalk.ts'
 import { config as cfgAll } from './config.ts'
 import { homePage, loginPage, messagePage, profilePage, resetPage, sessionConfirmPage } from './render.ts'
@@ -629,7 +630,9 @@ export async function handleProfilePassword(req: import('node:http').IncomingMes
   const back = (error: string) => handleProfile(req, res, error)
   // CSRF token 与当前会话 sid 绑定(与 profilePage 渲染时一致)
   if (!verifyCsrf(session.sid, form.csrf)) return back('页面已过期,请重新打开登录页')
-  if (newPassword.length < 8) return back('新密码至少 8 位')
+  // 强度预检与 /reset/confirm 共用同一套规则,返回具体缺项提示
+  const issues = checkPasswordStrength(newPassword)
+  if (issues.length > 0) return back(describePasswordIssues(issues))
   if (newPassword !== confirm) return back('两次输入的新密码不一致')
 
   try {
@@ -644,8 +647,9 @@ export async function handleProfilePassword(req: import('node:http').IncomingMes
     audit({ event: 'password_set', ok: true, sub: session.sub })
     handleProfile(req, res, undefined, '密码已保存,可用于"账号密码"登录')
   } catch (err) {
+    // 审计留原始错误(含 Syno 错误码);页面展示按目录密码策略翻译后的文案
     audit({ event: 'password_set', ok: false, sub: session.sub, detail: (err as Error).message })
-    back((err as Error).message)
+    back(friendlyPasswordError(err))
   }
 }
 

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { profilePage } from '../src/render.ts'
+import { PASSWORD_POLICY_HINT } from '../src/password-policy.ts'
 
 const html = profilePage({
   sub: '10001',
@@ -29,4 +30,8 @@ test('个人页按钮样式:保存密码为主按钮,退出/使用其他账号�
     const f = form(action)
     assert.ok(f.includes('class="btn"') && !f.includes('btn primary'), `${action} 应为次按钮样式`)
   }
+})
+
+test('个人页改密表单展示密码策略提示', () => {
+  assert.ok(html.includes(PASSWORD_POLICY_HINT))
 })

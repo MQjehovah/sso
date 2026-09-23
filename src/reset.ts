@@ -4,11 +4,12 @@ import { join } from 'node:path'
 import { config } from './config.ts'
 import type { DirectoryUser } from './directory.ts'
 import type { Mailer } from './mailer.ts'
+import { checkPasswordStrength, describePasswordIssues, friendlyPasswordError } from './password-policy.ts'
 
 /**
  * 自助重置验证码存储(JSON 落盘,风格同 store.ts):
- * - 只存 scrypt 哈希,不存明文码;单次有效,校验通过即删除。
- * - 错码累计尝试;达到上限(默认 5 次)作废该记录。
+ * - 只存 scrypt 哈希,不存明文码;单次有效,由调用方在业务成功后 consume 删除。
+ * - verify 只校验不删除:错码累计尝试;达到上限(默认 5 次)作废该记录;正确码不计数。
  * - 读写时清理过期条目;文件权限 0600(数据目录约定)。
  */
 export type VerifyResult = 'ok' | 'missing' | 'expired' | 'mismatch' | 'too_many'
@@ -26,6 +27,11 @@ export interface ResetCodeRecord {
 
 export function createResetCodeStore(dir: string, opts?: { now?: () => number; ttlSeconds?: number; maxAttempts?: number }): {
   issue(sub: string, email: string, code: string, ip: string): void
+  /** 校验但不消费: 错码累计 attempts, 正确码不计数; 记录保留到 consume/TTL/超限 */
+  verify(sub: string, code: string): VerifyResult
+  /** 消费(删除)验证码; 记录不存在时为无害空操作 */
+  consume(sub: string): void
+  /** = verify 成功后再 consume(兼容既有调用方) */
   verifyAndConsume(sub: string, code: string): VerifyResult
   peek(sub: string): ResetCodeRecord | undefined
   /** 当前存储的有效期(秒),供邮件文案与实际 TTL 保持一致 */
@@ -68,6 +74,36 @@ export function createResetCodeStore(dir: string, opts?: { now?: () => number; t
     }
   }
 
+  function verify(sub: string, code: string): VerifyResult {
+    ensureLoaded()
+    const rec = codes.get(sub)
+    if (!rec) return 'missing'
+    if (rec.expiresAt <= now()) {
+      codes.delete(sub)
+      persist()
+      return 'expired'
+    }
+    const expected = Buffer.from(rec.codeHash, 'hex')
+    const actual = scryptSync(code, Buffer.from(rec.salt, 'hex'), expected.length)
+    if (expected.length === actual.length && timingSafeEqual(expected, actual)) {
+      // 正确码不删除也不计数: 目录侧拒绝新密码时可换合规密码重试同一验证码(TTL/错码上限仍约束)
+      return 'ok'
+    }
+    rec.attempts++
+    if (rec.attempts >= maxAttempts) {
+      codes.delete(sub)
+      persist()
+      return 'too_many'
+    }
+    persist()
+    return 'mismatch'
+  }
+
+  function consume(sub: string): void {
+    ensureLoaded()
+    if (codes.delete(sub)) persist()
+  }
+
   return {
     ttlSeconds,
 
@@ -89,30 +125,14 @@ export function createResetCodeStore(dir: string, opts?: { now?: () => number; t
       persist()
     },
 
+    verify,
+
+    consume,
+
     verifyAndConsume(sub: string, code: string): VerifyResult {
-      ensureLoaded()
-      const rec = codes.get(sub)
-      if (!rec) return 'missing'
-      if (rec.expiresAt <= now()) {
-        codes.delete(sub)
-        persist()
-        return 'expired'
-      }
-      const expected = Buffer.from(rec.codeHash, 'hex')
-      const actual = scryptSync(code, Buffer.from(rec.salt, 'hex'), expected.length)
-      if (expected.length === actual.length && timingSafeEqual(expected, actual)) {
-        codes.delete(sub)
-        persist()
-        return 'ok'
-      }
-      rec.attempts++
-      if (rec.attempts >= maxAttempts) {
-        codes.delete(sub)
-        persist()
-        return 'too_many'
-      }
-      persist()
-      return 'mismatch'
+      const result = verify(sub, code)
+      if (result === 'ok') consume(sub)
+      return result
     },
 
     peek(sub: string): ResetCodeRecord | undefined {
@@ -205,7 +225,12 @@ export async function requestReset(input: { sub: string; ip: string }, deps: Res
   return { message: RESET_REQUEST_MESSAGE }
 }
 
-/** 确认重置:校验密码长度 → 查目录/禁用校验 → 消费验证码 → 写密码 → 踢会话/token → 变更通知(best-effort) */
+/**
+ * 确认重置:限流 → 密码强度预检 → 查目录/禁用校验 → 校验验证码(不消费) → 写密码
+ * → 成功才消费验证码并踢会话/token → 变更通知(best-effort)。
+ * 验证码类失败(missing/expired/mismatch/too_many)保持统一文案防枚举;
+ * 密码策略类失败返回具体提示,且不消费验证码(可换合规密码重试)。
+ */
 export async function confirmReset(
   input: { sub: string; code: string; newPassword: string; ip: string },
   deps: ResetDeps
@@ -213,19 +238,23 @@ export async function confirmReset(
   const sub = input.sub.trim()
   // 审计优先用目录规范 sub(手机号输入→工号);查不到目录用户时保留原始输入
   let auditSub = sub
+  const auditFail = (detail: string, auditUser = auditSub): void => {
+    deps.audit({ event: 'reset_confirm', ok: false, sub: auditUser || undefined, ip: input.ip, detail })
+  }
   const fail = (detail: string): { ok: false; message: string } => {
-    deps.audit({ event: 'reset_confirm', ok: false, sub: auditSub || undefined, ip: input.ip, detail })
+    auditFail(detail)
     return { ok: false, message: RESET_FAIL_MESSAGE }
   }
   // 确认限流先于验证码校验(也先于目录查询):挡验证码爆破;命中超限不消费码,统一失败文案不泄露原因
-  // 取舍:防刷优先,长度不符的请求同样计入配额(不享受「短密码不消耗验证码」式豁免)
+  // 取舍:防刷优先,强度预检不通过的请求同样计入配额
   if (!deps.rateLimit(`reset:confirm:${input.ip}`, 10, 60_000)) {
     return fail(`限流:reset:confirm:${input.ip}`)
   }
-  // 长度规则与 /profile/password 对齐(仅要求 ≥8);不符时不消费验证码,且属用户自有输入,给明确提示
-  if (input.newPassword.length < 8) {
-    deps.audit({ event: 'reset_confirm', ok: false, sub: sub || undefined, ip: input.ip, detail: '新密码少于 8 位' })
-    return { ok: false, message: '新密码至少 8 位' }
+  // 密码强度预检:属用户自有输入,给具体缺项提示;不消费验证码、不计错码 attempts
+  const issues = checkPasswordStrength(input.newPassword)
+  if (issues.length > 0) {
+    auditFail(`新密码不符合策略: ${issues.join(', ')}`)
+    return { ok: false, message: describePasswordIssues(issues) }
   }
 
   const user = await deps.directory.findByIdentifier(sub)
@@ -233,27 +262,35 @@ export async function confirmReset(
   // 禁用账号在消费验证码与写密码之前拦截
   if (user && user.status !== 'active') return fail('账号已禁用')
 
-  const result = deps.codes.verifyAndConsume(user?.sub ?? sub, input.code)
+  // 只校验不消费:目录侧拒绝新密码时,同一验证码可换合规密码重试,直到 TTL 到期/错码超限
+  const result = deps.codes.verify(user?.sub ?? sub, input.code)
   if (result !== 'ok') return fail(`验证码校验失败(${result})`)
   if (!user) return fail('目录中无此工号')
 
   try {
     await deps.password.setPassword(user, null, input.newPassword)
   } catch (err) {
-    return fail(`设置密码失败: ${(err as Error).message}`)
+    // 审计留原始错误;给用户的文案按目录密码策略翻译,且不消费验证码
+    auditFail(`设置密码失败: ${(err as Error).message}`)
+    return { ok: false, message: friendlyPasswordError(err) }
   }
-
-  // 密码已改是既成事实:revoke 落盘异常只记审计,不阻断成功返回与变更通知;两项各自独立兜底
-  const revokeErrors: string[] = []
+  // 密码已改是既成事实:consume/revoke 落盘异常只记审计,不阻断成功返回与变更通知;各项独立兜底
+  const postErrors: string[] = []
+  try {
+    // 验证码在密码写入成功后才消费(单次有效);消费失败不回滚已改密码
+    deps.codes.consume(user.sub)
+  } catch (err) {
+    postErrors.push(`consumeResetCode: ${(err as Error).message}`)
+  }
   try {
     deps.revokeSessions(user.sub)
   } catch (err) {
-    revokeErrors.push(`revokeSessions: ${(err as Error).message}`)
+    postErrors.push(`revokeSessions: ${(err as Error).message}`)
   }
   try {
     deps.revokeTokens(user.sub)
   } catch (err) {
-    revokeErrors.push(`revokeTokens: ${(err as Error).message}`)
+    postErrors.push(`revokeTokens: ${(err as Error).message}`)
   }
   let noticeError: string | undefined
   if (user.email) {
@@ -264,7 +301,7 @@ export async function confirmReset(
     }
   }
   const details = [
-    revokeErrors.length ? `revokeError: ${revokeErrors.join('; ')}` : '',
+    postErrors.length ? `postError: ${postErrors.join('; ')}` : '',
     noticeError ? `变更通知发送失败: ${noticeError}` : ''
   ].filter(Boolean)
   deps.audit({

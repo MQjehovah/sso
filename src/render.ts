@@ -1,6 +1,7 @@
 /** 登录页与简单页面模板(内联样式,无前端框架依赖) */
 
 import { LOGO_SVG } from './brand.ts'
+import { PASSWORD_POLICY_HINT } from './password-policy.ts'
 
 const BASE_STYLE = `
   *{box-sizing:border-box;margin:0;padding:0}
@@ -34,6 +35,9 @@ const BASE_STYLE = `
 function successBlock(text?: string): string {
   return text ? `<div class="err" style="background:#1b2b1e;border-color:#2a5a32;color:#8fd19a">${escapeHtml(text)}</div>` : ''
 }
+
+/** 新密码强度要求提示(左对齐,紧跟密码输入框;文案与后端预检共用) */
+const PASSWORD_HINT_HTML = `<div class="hint" style="text-align:left;margin:6px 0 0">${PASSWORD_POLICY_HINT}</div>`
 
 export function loginPage(opts: {
   txId: string
@@ -126,7 +130,8 @@ export function resetPage(opts: { step: 1 | 2; sub?: string; notice?: string; er
     : `<form method="post" action="/reset/confirm">
         <input type="hidden" name="sub" value="${escapeHtml(sub ?? '')}" />
         <label>邮箱验证码</label><input name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required />
-        <label>新密码(至少 8 位)</label><input name="new_password" type="password" minlength="8" required />
+        <label>新密码</label><input name="new_password" type="password" minlength="8" required />
+        ${PASSWORD_HINT_HTML}
         <label>确认新密码</label><input name="confirm" type="password" minlength="8" required />
         <label></label><button class="btn primary" type="submit">重置密码</button>
       </form>`
@@ -201,7 +206,8 @@ export function profilePage(opts: {
   <form method="post" action="/profile/password">
     <input type="hidden" name="csrf" value="${csrf}" />
     ${current}
-    <label>新密码(至少 8 位)</label><input name="new_password" type="password" minlength="8" required />
+    <label>新密码</label><input name="new_password" type="password" minlength="8" required />
+    ${PASSWORD_HINT_HTML}
     <label>确认新密码</label><input name="confirm" type="password" minlength="8" required />
     <label></label><button class="btn primary" type="submit">保存密码</button>
   </form>
