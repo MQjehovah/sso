@@ -19,7 +19,7 @@ const BASE_STYLE = `
   .tabs a.on{background:#2a2a2a;color:#e8e8e8}
   .tabs a:hover{color:#e8e8e8}
   .qr-wrap{display:flex;flex-direction:column;align-items:center}
-  .qr-frame{width:100%;max-width:400px;height:480px;border:0;border-radius:10px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+  .qr-frame{width:100%;max-width:400px;height:580px;border:0;border-radius:10px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.35)}
   .btn{display:block;width:100%;padding:10px 0;border:none;border-radius:9px;cursor:pointer;
        font-size:14px;text-align:center;text-decoration:none;background:#e8e8e8;color:#141414}
   .btn.primary{background:linear-gradient(135deg,#409eff,#2979ff);color:#fff}
