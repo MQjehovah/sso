@@ -1,6 +1,6 @@
 /**
  * 模拟钉钉开放平台(仅烟测用):
- * - /login/oauth/authorize      扫码页:立即"扫码成功",302 回 SSO callback(authCode)
+ * - /login/oauth2/auth          扫码页:立即"扫码成功",302 回 SSO callback(authCode)
  * - /__set_next_user            测试钩子:切换下一个"扫码"的用户(active/disabled 两种场景)
  * - /v1.0/oauth2/userAccessToken  authCode → accessToken + unionId
  * - /v1.0/oauth2/accessToken    企业 app token
@@ -31,7 +31,7 @@ const server = createServer((req, res) => {
     return json(res, 200, { nextUser })
   }
 
-  if (path === '/login/oauth/authorize' && req.method === 'GET') {
+    if (path === '/login/oauth2/auth' && req.method === 'GET') {
     // 模拟用户瞬间扫码确认:302 回 SSO callback
     const redirectUri = url.searchParams.get('redirect_uri') ?? ''
     const state = url.searchParams.get('state') ?? ''

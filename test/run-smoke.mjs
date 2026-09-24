@@ -708,7 +708,7 @@ async function main() {
     const tx3 = new URL(loginLoc3, SSO).searchParams.get('tx')
     const rStart = await ssoFetch(jar2, `${SSO}/dingtalk/start?tx=${tx3}`, { redirect: 'manual' })
     const startLoc = rStart.headers.get('location') ?? ''
-    assert('扫码跳转钉钉授权页(mock)', startLoc.includes('/login/oauth/authorize'))
+    assert('扫码跳转钉钉授权页(mock)', startLoc.includes('/login/oauth2/auth'))
 
     // 模拟扫码:mock 直接 302 回 SSO callback;一路跟随
     let cur = startLoc
