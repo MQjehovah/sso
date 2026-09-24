@@ -80,6 +80,8 @@ npm 脚本:
 | `SSO_SECRET_*` | 无 | 机密客户端密钥,由 `src/clients.ts` 在展开 `clients.json` 的 `${ENV:...}` 占位时读取;未设置或为空串会导致启动失败。公共客户端(`public: true`)与密钥互斥,不得配置。示例见 `.env.example`:`SSO_SECRET_AGENT`、`SSO_SECRET_MARKET`、`SSO_SECRET_RAG`、`SSO_SECRET_ROUTER`、`SSO_SECRET_ZHONGTAI_OA`、`SSO_SECRET_TEST_WEB` |
 
 > 说明:`authorize` 事务 TTL 固定 10 分钟、授权码 TTL 固定 5 分钟,不可通过环境变量调整。
+>
+> `SSO_PROFILE_OVERRIDES` 为 JSON:在 docker `--env-file` 下必须写成**单行紧凑 JSON,勿加外层引号、勿转义内部引号**(env 解析与 JSON 解析是两层,外层引号/转义会被原样带进值里导致 `JSON.parse` 失败);非法时不阻断启动,按空映射处理并告警。
 
 ## clients.json 与 secret 管理
 

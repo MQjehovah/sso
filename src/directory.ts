@@ -50,6 +50,36 @@ export function applyProfileOverrides(
   }
 }
 
+export interface LdapAttrs {
+  sub: string
+  name: string
+  dept: string
+  mobile: string
+  mail: string
+  dingtalk: string
+  status: string
+}
+
+/**
+ * 把 LDAP 条目映射为 DirectoryUser:属性名一律取自配置(LDAP_ATTR_*),不写死默认属性名。
+ * 抽成纯函数便于用自定义属性布局单测(如 LDAP_ATTR_MOBILE=mobileNumber)。
+ */
+export function mapLdapEntry(e: Record<string, unknown>, attrs: LdapAttrs, statusDisabledFlag: string): DirectoryUser {
+  const statusRaw = e[attrs.status] ? String(e[attrs.status]) : ''
+  const disabled = statusRaw.toLowerCase().includes(statusDisabledFlag.toLowerCase())
+  const mob = e[attrs.mobile]
+  return {
+    sub: String(e[attrs.sub] ?? ''),
+    name: String(e[attrs.name] || e.cn || ''),
+    dept: String(e[attrs.dept] ?? ''),
+    email: e[attrs.mail] ? String(e[attrs.mail]).trim().toLowerCase() : undefined,
+    mobile: mob ? String(mob) : undefined,
+    dingtalkUserId: String(e[attrs.dingtalk] ?? ''),
+    status: disabled ? 'disabled' : 'active',
+    dn: typeof e.dn === 'string' ? e.dn : undefined
+  }
+}
+
 class LdapDirectory implements DirectoryProvider {
   private ldap = config.ldap!
 
@@ -74,19 +104,7 @@ class LdapDirectory implements DirectoryProvider {
           attributes: [a.sub, a.name, 'cn', a.dept, a.mobile, a.mail, a.dingtalk, a.status]
       })
       if (searchEntries.length === 0) return null
-      const e = searchEntries[0]
-      const statusRaw = e[a.status] ? String(e[a.status]) : ''
-      const disabled = statusRaw.toLowerCase().includes(this.ldap.statusDisabledFlag.toLowerCase())
-      return {
-          sub: String(e[a.sub] ?? ''),
-          name: String(e[a.name] || e.cn || ''),
-          dept: String(e[a.dept] ?? ''),
-          email: e[a.mail] ? String(e[a.mail]).trim().toLowerCase() : undefined,
-          mobile: e.mobile ? String(e.mobile) : undefined,
-        dingtalkUserId: String(e[a.dingtalk] ?? ''),
-        status: disabled ? 'disabled' : 'active',
-        dn: e.dn
-      }
+      return mapLdapEntry(searchEntries[0] as unknown as Record<string, unknown>, a, this.ldap.statusDisabledFlag)
     } finally {
       await client.unbind().catch(() => {})
     }
