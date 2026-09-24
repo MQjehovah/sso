@@ -27,3 +27,16 @@ test('登录回执页对重置完成提示做 HTML 转义', () => {
   assert.ok(!html.includes('<b>密码已重置</b>'))
   assert.ok(html.includes('&lt;b&gt;密码已重置&lt;/b&gt;'))
 })
+
+test('扫码页签内嵌二维码 iframe，不再用跳转按钮', () => {
+  const html = loginPage({ txId: 'tx1', tab: 'qr', csrf: 'c', dingtalkEnabled: true })
+  assert.match(html, /<iframe class="qr-frame" src="\/dingtalk\/start\?tx=tx1"/)
+  assert.ok(!html.includes('打开钉钉扫码'))
+  assert.ok(html.includes('用钉钉 App 扫码'))
+})
+
+test('未启用钉钉时无扫码页签与 iframe', () => {
+  const html = loginPage({ txId: 'tx1', tab: 'pwd', csrf: 'c', dingtalkEnabled: false })
+  assert.ok(!html.includes('qr-frame'))
+  assert.ok(!html.includes('钉钉扫码'))
+})

@@ -18,6 +18,8 @@ const BASE_STYLE = `
   .tabs a{flex:1;text-align:center;padding:8px 0;font-size:13px;color:#9b9b9b;text-decoration:none}
   .tabs a.on{background:#2a2a2a;color:#e8e8e8}
   .tabs a:hover{color:#e8e8e8}
+.qr-wrap{display:flex;flex-direction:column;align-items:center}
+.qr-frame{width:300px;height:360px;border:0;border-radius:10px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.35)}
   .btn{display:block;width:100%;padding:10px 0;border:none;border-radius:9px;cursor:pointer;
        font-size:14px;text-align:center;text-decoration:none;background:#e8e8e8;color:#141414}
   .btn.primary{background:linear-gradient(135deg,#409eff,#2979ff);color:#fff}
@@ -63,7 +65,11 @@ export function loginPage(opts: {
   const panel = !hasTx
     ? `<div class="hint" style="margin:0">请返回业务系统重新发起登录</div>`
     : tab === 'qr' && dingtalkEnabled
-      ? `<a class="btn primary" href="/dingtalk/start?tx=${txId}">打开钉钉扫码</a>`
+      ? `<div class="qr-wrap">
+        <iframe class="qr-frame" src="/dingtalk/start?tx=${txId}" title="钉钉扫码登录" loading="lazy"></iframe>
+        <div class="hint" style="margin:10px 0 0">用钉钉 App 扫码，并在手机上确认登录</div>
+        <div class="hint" style="margin:8px 0 0"><a href="/dingtalk/start?tx=${txId}" target="_blank" rel="noopener" style="color:#409eff;text-decoration:none">二维码不显示？在新窗口打开</a></div>
+      </div>`
       : `${err}<form method="post" action="/login/password">
         <input type="hidden" name="tx" value="${txId}" />
         <input type="hidden" name="csrf" value="${csrf}" />
