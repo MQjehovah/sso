@@ -13,8 +13,8 @@ import { createServer } from 'node:http'
 let nextUser = 'active'
 
 const USERS = {
-  active: { unionId: 'union-10003', userid: '10003', name: '王五', mobile: '13800000003' },
-  disabled: { unionId: 'union-10002', userid: '10002', name: '李四', mobile: '13800000002' }
+  active: { unionId: 'union-10003', userid: '10003', jobNumber: '10003', name: '王五', mobile: '13800000003', email: 'wangwu@corp.com' },
+  disabled: { unionId: 'union-10002', userid: '10002', jobNumber: '10002', name: '李四', mobile: '13800000002', email: 'lisi@corp.com' }
 }
 
 const json = (res, status, body) => {
@@ -56,6 +56,14 @@ const server = createServer((req, res) => {
   if (path === '/topapi/user/getbyunionid' && req.method === 'POST') {
     const u = USERS[nextUser]
     return json(res, 200, { errcode: 0, result: { userid: u.userid } })
+  }
+
+  if (path === '/topapi/v2/user/get' && req.method === 'POST') {
+    const u = USERS[nextUser]
+    return json(res, 200, {
+      errcode: 0,
+      result: { job_number: u.jobNumber, name: u.name, mobile: u.mobile, email: u.email }
+    })
   }
 
   json(res, 404, { error: 'not found' })

@@ -10,6 +10,9 @@ export interface DingtalkIdentity {
   userid: string
   name?: string
   mobile?: string
+  email?: string
+  /** 钉钉员工详情里的工号(job_number)，用于按 LDAP uid 匹配 */
+  jobNumber?: string
 }
 
 export function buildScanUrl(state: string): string {
@@ -86,6 +89,30 @@ export async function exchangeIdentity(authCode: string): Promise<DingtalkIdenti
   const userid = mapped.result?.userid
   if (!userid) throw new Error(`钉钉账号未关联企业员工(unionId=${me.unionId})`)
 
-  // 3) 姓名/手机号取 /contact/users/me(辅助展示;目录为准,手机号可能为空)
-  return { userid, name: me.nick, mobile: me.mobile }
+  // 2.5) 员工详情: 取工号(job_number, 用于 LDAP uid 匹配) 与姓名/手机/邮箱(可空,失败不阻断)
+  let jobNumber: string | undefined
+  let name: string | undefined = me.nick
+  let mobile: string | undefined = me.mobile
+  let email: string | undefined
+  try {
+    const detailRes = await fetch(`${cfg.oapiBase}/topapi/v2/user/get?access_token=${encodeURIComponent(app.accessToken)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userid })
+    })
+    if (detailRes.ok) {
+      const detail = (await detailRes.json()) as {
+        result?: { job_number?: string; name?: string; mobile?: string; email?: string; org_email?: string }
+      }
+      const r = detail.result
+      jobNumber = r?.job_number?.trim() || undefined
+      name = r?.name || name
+      mobile = r?.mobile || mobile
+      email = (r?.org_email || r?.email || undefined)?.trim().toLowerCase() || undefined
+    }
+  } catch {
+    // 员工详情可选,失败不阻断(仍可走钉钉号匹配)
+  }
+
+  return { userid, name, mobile, email, jobNumber }
 }

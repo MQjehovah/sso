@@ -352,13 +352,17 @@ export async function handleDingtalkCallback(req: import('node:http').IncomingMe
     return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
   }
 
-  try {
-    const identity = await exchangeIdentity(authCode)
-    const user = await directory.findByDingtalkUserId(identity.userid)
-    if (!user) {
-      audit({ event: 'login_qr', ok: false, ip, detail: `目录中无此钉钉账号(userid=${identity.userid})` })
-      return html(res, 403, messagePage('未找到对应员工', '你的钉钉账号未同步到公司目录,请联系管理员', false))
-    }
+    try {
+      const identity = await exchangeIdentity(authCode)
+      // 匹配顺序: 工号(LDAP uid, 最稳) → 钉钉号 → 邮箱
+      const user =
+        (identity.jobNumber ? await directory.findByIdentifier(identity.jobNumber) : null) ??
+        (await directory.findByDingtalkUserId(identity.userid)) ??
+        (identity.email ? await directory.findByMail(identity.email) : null)
+      if (!user) {
+        audit({ event: 'login_qr', ok: false, ip, detail: `目录中无此员工(userid=${identity.userid}, job=${identity.jobNumber ?? ''})` })
+        return html(res, 403, messagePage('未找到对应员工', '你的钉钉账号未同步到公司目录,请联系管理员', false))
+      }
     if (user.status !== 'active') {
       audit({ event: 'login_qr', ok: false, sub: user.sub, ip, detail: '账号已禁用' })
       return html(res, 403, messagePage('账号已禁用', '该账号已离职或被停用,如属误判请联系管理员', false))

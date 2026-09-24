@@ -26,6 +26,8 @@ export interface DirectoryProvider {
   findByDingtalkUserId(id: string): Promise<DirectoryUser | null>
   /** 唯一标识或手机号(密码登录用) */
   findByIdentifier(id: string): Promise<DirectoryUser | null>
+  /** 按邮箱查询(钉钉登录兜底匹配; 大小写不敏感) */
+  findByMail(mail: string): Promise<DirectoryUser | null>
 }
 
 /**
@@ -93,6 +95,12 @@ class LdapDirectory implements DirectoryProvider {
     return applyProfileOverrides(await this.search(`(|(${this.ldap.attrs.sub}=${f})(${this.ldap.attrs.mobile}=${f}))`))
   }
 
+  async findByMail(mail: string): Promise<DirectoryUser | null> {
+    const m = (mail ?? '').trim()
+    if (!m) return null
+    return applyProfileOverrides(await this.search(`(${this.ldap.attrs.mail}=${escapeFilter(m)})`))
+  }
+
   private async search(filter: string): Promise<DirectoryUser | null> {
     const client = new Client({ url: this.ldap.url })
     const a = this.ldap.attrs
@@ -128,6 +136,12 @@ class FileDirectory implements DirectoryProvider {
 
   async findByIdentifier(id: string): Promise<DirectoryUser | null> {
     return applyProfileOverrides(this.users().find((u) => u.sub === id || u.mobile === id) ?? null)
+  }
+
+  async findByMail(mail: string): Promise<DirectoryUser | null> {
+    const m = (mail ?? '').trim().toLowerCase()
+    if (!m) return null
+    return applyProfileOverrides(this.users().find((u) => (u.email ?? '').toLowerCase() === m) ?? null)
   }
 }
 
