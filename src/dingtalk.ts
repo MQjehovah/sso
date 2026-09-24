@@ -22,7 +22,7 @@ export function buildScanUrl(state: string): string {
     state,
     prompt: 'consent'
   })
-  return `${cfg.loginBase}/oauth/authorize?${params.toString()}`
+  return `${cfg.loginBase}/oauth2/auth?${params.toString()}`
 }
 
 /** 防回调伪造:state 由 SSO 生成并绑定登录事务 */
