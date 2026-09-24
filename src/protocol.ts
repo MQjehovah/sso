@@ -19,7 +19,7 @@ import { createResetCodeStore, requestReset, confirmReset, type ResetDeps } from
 import { checkPasswordStrength, describePasswordIssues, friendlyPasswordError } from './password-policy.ts'
 import { buildScanUrl, newDingtalkState, exchangeIdentity } from './dingtalk.ts'
 import { config as cfgAll } from './config.ts'
-import { homePage, loginPage, messagePage, profilePage, resetPage, sessionConfirmPage } from './render.ts'
+import { breakoutPage, homePage, loginPage, messagePage, profilePage, resetPage, sessionConfirmPage } from './render.ts'
 import { issueCsrf, verifyCsrf } from './csrf.ts'
 
 const directory = createDirectory()
@@ -248,7 +248,7 @@ export async function handleAuthorizeSwitch(req: import('node:http').IncomingMes
   redirect(res, `/login?tx=${checked.tx.id}&tab=qr`)
 }
 
-function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingTx, session: SsoSession): void {
+function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingTx, session: SsoSession, opts?: { breakout?: boolean }): void {
   // 原子认领事务:LDAP 等异步校验窗口内并发复用同一 tx 时,只有第一个请求能签码(其余 400)
   if (!finishTx(tx.id)) {
     return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
@@ -259,7 +259,12 @@ function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingT
   res.setHeader('Set-Cookie', [
     `sso_sid=${session.sid}; ${sessionCookieAttrs()}; Max-Age=${Math.floor(config.sessionTtlMs / 1000)}`
   ])
-  redirect(res, `${tx.redirect_uri}${tx.redirect_uri.includes('?') ? '&' : '?'}${params.toString()}`)
+  const target = `${tx.redirect_uri}${tx.redirect_uri.includes('?') ? '&' : '?'}${params.toString()}`
+  // 扫码 iframe 场景:登录完成后跳出 iframe,由顶层窗口完成跳转(否则业务应用会渲染在二维码框里)
+  if (opts?.breakout) {
+    return html(res, 200, breakoutPage(target))
+  }
+  redirect(res, target)
 }
 
 // ---- 首页 ----
@@ -367,9 +372,11 @@ export async function handleDingtalkCallback(req: import('node:http').IncomingMe
       audit({ event: 'login_qr', ok: false, sub: user.sub, ip, detail: '账号已禁用' })
       return html(res, 403, messagePage('账号已禁用', '该账号已离职或被停用,如属误判请联系管理员', false))
     }
-    audit({ event: 'login_qr', ok: true, sub: user.sub, client_id: tx.client_id, ip })
-    const session = createSession(user.sub, user.name, user.dept, 'qr', user.dingtalkUserId, user.email, user.mobile)
-    issueCodeRedirect(res, tx, session)
+      audit({ event: 'login_qr', ok: true, sub: user.sub, client_id: tx.client_id, ip })
+      const session = createSession(user.sub, user.name, user.dept, 'qr', user.dingtalkUserId, user.email, user.mobile)
+      // iframe 内完成的扫码:让顶层窗口跳转,避免业务应用被渲染在二维码 iframe 里
+      const inIframe = String(req.headers['sec-fetch-dest'] ?? '') === 'iframe'
+      issueCodeRedirect(res, tx, session, { breakout: inIframe })
   } catch (err) {
     audit({ event: 'login_qr', ok: false, ip, detail: (err as Error).message })
     html(res, 502, messagePage('钉钉认证失败', (err as Error).message, false))

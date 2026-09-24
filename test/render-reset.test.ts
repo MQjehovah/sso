@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { loginPage, resetPage } from '../src/render.ts'
+import { breakoutPage, loginPage, resetPage } from '../src/render.ts'
 import { PASSWORD_POLICY_HINT } from '../src/password-policy.ts'
 
 test('重置页 step2 含验证码与新密码表单, 并展示密码策略提示', () => {
@@ -39,4 +39,14 @@ test('未启用钉钉时无扫码页签与 iframe', () => {
   const html = loginPage({ txId: 'tx1', tab: 'pwd', csrf: 'c', dingtalkEnabled: false })
   assert.ok(!html.includes('<iframe class="qr-frame"'))
   assert.ok(!html.includes('钉钉扫码'))
+})
+
+test('扫码跳出页:顶层跳转 + noscript 兜底 + URL 转义', () => {
+  const target = 'https://m.example/cb?code=a&state="q"<x>'
+  const html = breakoutPage(target)
+  assert.ok(html.includes('window.top.location.replace('))
+  assert.ok(html.includes('<noscript>'))
+  assert.ok(!html.includes('state="q"<x>'))
+  assert.ok(html.includes('&quot;q&quot;&lt;x&gt;'))
+  assert.ok(html.includes(JSON.stringify(target)))
 })

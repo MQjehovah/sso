@@ -187,6 +187,24 @@ export function messagePage(title: string, detail: string, ok: boolean): string 
 </body></html>`
 }
 
+/**
+ * 扫码 iframe 内登录完成后的跳出页:把顶层窗口导航到业务回调 URL。
+ * target 由服务端构造(注册的 redirect_uri + code + state),JS 侧用 JSON 字符串字面量防注入。
+ */
+export function breakoutPage(target: string): string {
+  const safe = JSON.stringify(target)
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>登录成功</title>
+<style>${BASE_STYLE}</style></head><body>
+<div class="card" style="text-align:center">
+  <div class="logo"><span class="mark">✓</span></div>
+  <h1>登录成功</h1>
+  <p class="sub">正在跳转…</p>
+  <noscript><a class="btn primary" href="${escapeHtml(target)}">继续</a></noscript>
+</div>
+<script>try{window.top.location.replace(${safe})}catch(e){window.location.replace(${safe})}</script>
+</body></html>`
+}
+
 export function profilePage(opts: {
   sub: string
   name: string
