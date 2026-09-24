@@ -69,7 +69,6 @@ export function loginPage(opts: {
     : tab === 'qr' && dingtalkEnabled
       ? `<div class="qr-wrap">
         <iframe class="qr-frame" src="/dingtalk/start?tx=${txId}" title="钉钉登录" loading="lazy"></iframe>
-        <div class="hint" style="margin:8px 0 0"><a href="/dingtalk/start?tx=${txId}" target="_blank" rel="noopener" style="color:#409eff;text-decoration:none">二维码不显示？在新窗口打开</a></div>
       </div>`
       : `${err}<form method="post" action="/login/password">
         <input type="hidden" name="tx" value="${txId}" />
