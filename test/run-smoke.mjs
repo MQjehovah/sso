@@ -268,7 +268,7 @@ async function main() {
     const loginLoc = r1.headers.get('location') ?? ''
     assert('未登录 → 跳转登录页', r1.status === 302 && loginLoc.startsWith('/login?tx='))
     const loginPage = await (await ssoFetch(jar1, new URL(loginLoc, SSO))).text()
-    assert('登录页含扫码与密码双通道', loginPage.includes('钉钉扫码') && loginPage.includes('账号密码'))
+    assert('登录页含扫码与密码双通道', loginPage.includes('钉钉登录') && loginPage.includes('账号密码'))
 
     const tx = new URL(loginLoc, SSO).searchParams.get('tx')
 

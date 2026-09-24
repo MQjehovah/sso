@@ -32,13 +32,14 @@ test('扫码页签内嵌二维码 iframe，不再用跳转按钮', () => {
   const html = loginPage({ txId: 'tx1', tab: 'qr', csrf: 'c', dingtalkEnabled: true })
   assert.match(html, /<iframe class="qr-frame" src="\/dingtalk\/start\?tx=tx1"/)
   assert.ok(!html.includes('打开钉钉扫码'))
-  assert.ok(html.includes('用钉钉 App 扫码'))
+  assert.ok(html.includes('二维码不显示？在新窗口打开'))
+  assert.ok(!html.includes('登录即代表同意公司信息安全规范'))
 })
 
 test('未启用钉钉时无扫码页签与 iframe', () => {
   const html = loginPage({ txId: 'tx1', tab: 'pwd', csrf: 'c', dingtalkEnabled: false })
   assert.ok(!html.includes('<iframe class="qr-frame"'))
-  assert.ok(!html.includes('钉钉扫码'))
+  assert.ok(!html.includes('钉钉登录'))
 })
 
 test('扫码跳出页:顶层跳转 + noscript 兜底 + URL 转义', () => {
