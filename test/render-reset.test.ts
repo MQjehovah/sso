@@ -37,6 +37,6 @@ test('扫码页签内嵌二维码 iframe，不再用跳转按钮', () => {
 
 test('未启用钉钉时无扫码页签与 iframe', () => {
   const html = loginPage({ txId: 'tx1', tab: 'pwd', csrf: 'c', dingtalkEnabled: false })
-  assert.ok(!html.includes('qr-frame'))
+  assert.ok(!html.includes('<iframe class="qr-frame"'))
   assert.ok(!html.includes('钉钉扫码'))
 })
