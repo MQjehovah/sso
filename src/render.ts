@@ -5,9 +5,9 @@ import { PASSWORD_POLICY_HINT } from './password-policy.ts'
 
 const BASE_STYLE = `
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#161616;color:#e8e8e8;
-       display:flex;align-items:center;justify-content:center;min-height:100vh}
-  .card{width:400px;background:#1e1e1e;border:1px solid #2e2e2e;border-radius:14px;padding:32px}
+    body{font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#161616;color:#e8e8e8;
+         display:flex;min-height:100vh;padding:24px 0}
+    .card{width:440px;background:#1e1e1e;border:1px solid #2e2e2e;border-radius:14px;padding:32px;margin:auto}
   .logo{width:36px;height:36px;margin:0 auto 14px}
   .logo svg{width:100%;height:100%;display:block}
   .logo .mark{width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#409eff,#7c3aed);
@@ -18,8 +18,8 @@ const BASE_STYLE = `
   .tabs a{flex:1;text-align:center;padding:8px 0;font-size:13px;color:#9b9b9b;text-decoration:none}
   .tabs a.on{background:#2a2a2a;color:#e8e8e8}
   .tabs a:hover{color:#e8e8e8}
-.qr-wrap{display:flex;flex-direction:column;align-items:center}
-.qr-frame{width:300px;height:360px;border:0;border-radius:10px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+  .qr-wrap{display:flex;flex-direction:column;align-items:center}
+  .qr-frame{width:100%;max-width:400px;height:480px;border:0;border-radius:10px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.35)}
   .btn{display:block;width:100%;padding:10px 0;border:none;border-radius:9px;cursor:pointer;
        font-size:14px;text-align:center;text-decoration:none;background:#e8e8e8;color:#141414}
   .btn.primary{background:linear-gradient(135deg,#409eff,#2979ff);color:#fff}
