@@ -2,9 +2,9 @@
  * 模拟钉钉开放平台(仅烟测用):
  * - /login/oauth2/auth          扫码页:立即"扫码成功",302 回 SSO callback(authCode)
  * - /__set_next_user            测试钩子:切换下一个"扫码"的用户(active/disabled 两种场景)
- * - /v1.0/oauth2/userAccessToken  authCode → accessToken + unionId
+ * - /v1.0/oauth2/userAccessToken  authCode → 用户 accessToken(真实响应不含 unionId)
  * - /v1.0/oauth2/accessToken    企业 app token
- * - /v1.0/contact/users/{unionId} 联系人信息
+ * - /v1.0/contact/users/me      用户信息(unionId/昵称/手机号)
  * - /topapi/user/getbyunionid   unionId → userid
  */
 import { createServer } from 'node:http'
@@ -41,17 +41,16 @@ const server = createServer((req, res) => {
   }
 
   if (path === '/v1.0/oauth2/userAccessToken' && req.method === 'POST') {
-    const u = USERS[nextUser]
-    return json(res, 200, { accessToken: `mock-ut-${nextUser}`, expiresIn: 7200, unionId: u.unionId })
+    return json(res, 200, { accessToken: `mock-ut-${nextUser}`, expireIn: 7200 })
   }
 
   if (path === '/v1.0/oauth2/accessToken' && req.method === 'POST') {
     return json(res, 200, { accessToken: 'mock-app-token', expireIn: 7200 })
   }
 
-  if (path.startsWith('/v1.0/contact/users/') && req.method === 'GET') {
+  if (path === '/v1.0/contact/users/me' && req.method === 'GET') {
     const u = USERS[nextUser]
-    return json(res, 200, { unionId: u.unionId, name: u.name, mobile: u.mobile })
+    return json(res, 200, { unionId: u.unionId, nick: u.name, mobile: u.mobile })
   }
 
   if (path === '/topapi/user/getbyunionid' && req.method === 'POST') {

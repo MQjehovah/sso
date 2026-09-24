@@ -50,8 +50,21 @@ export async function exchangeIdentity(authCode: string): Promise<DingtalkIdenti
     console.error(`[dingtalk] userAccessToken HTTP ${utRes.status}: ${body.slice(0, 300)}`)
     throw new Error(`钉钉 userAccessToken 获取失败(HTTP ${utRes.status}${body ? ': ' + body.slice(0, 200) : ''})`)
   }
-  const ut = (await utRes.json()) as { accessToken?: string; unionId?: string }
-  if (!ut.accessToken || !ut.unionId) throw new Error('钉钉 userAccessToken 响应异常')
+  // 真实响应只有 accessToken/refreshToken/expireIn/corpId, unionId 需再调 /contact/users/me
+  const ut = (await utRes.json()) as { accessToken?: string }
+  if (!ut.accessToken) throw new Error('钉钉 userAccessToken 响应异常')
+
+  // 1.5) 用户级 token → 本人信息(unionId/昵称/手机号)
+  const meRes = await fetch(`${cfg.apiBase}/v1.0/contact/users/me`, {
+    headers: { 'x-acs-dingtalk-access-token': ut.accessToken }
+  })
+  if (!meRes.ok) {
+    const body = await meRes.text().catch(() => '')
+    console.error(`[dingtalk] contact/me HTTP ${meRes.status}: ${body.slice(0, 300)}`)
+    throw new Error(`钉钉用户信息获取失败(HTTP ${meRes.status}${body ? ': ' + body.slice(0, 200) : ''})`)
+  }
+  const me = (await meRes.json()) as { unionId?: string; nick?: string; mobile?: string }
+  if (!me.unionId) throw new Error('钉钉用户信息缺少 unionId')
 
   // 2) unionId → 企业内 userid
   const appRes = await fetch(`${cfg.apiBase}/v1.0/oauth2/accessToken`, {
@@ -66,28 +79,13 @@ export async function exchangeIdentity(authCode: string): Promise<DingtalkIdenti
   const mapRes = await fetch(`${cfg.oapiBase}/topapi/user/getbyunionid?access_token=${encodeURIComponent(app.accessToken)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ unionid: ut.unionId })
+    body: JSON.stringify({ unionid: me.unionId })
   })
   if (!mapRes.ok) throw new Error(`钉钉 unionId 映射失败(HTTP ${mapRes.status})`)
   const mapped = (await mapRes.json()) as { result?: { userid?: string }; errcode?: number; errmsg?: string }
   const userid = mapped.result?.userid
-  if (!userid) throw new Error(`钉钉账号未关联企业员工(unionId=${ut.unionId})`)
+  if (!userid) throw new Error(`钉钉账号未关联企业员工(unionId=${me.unionId})`)
 
-  // 3) 联系人信息(姓名/手机号,辅助展示;目录为准)
-  let name: string | undefined
-  let mobile: string | undefined
-  try {
-    const contactRes = await fetch(`${cfg.apiBase}/v1.0/contact/users/${encodeURIComponent(ut.unionId)}`, {
-      headers: { 'x-acs-dingtalk-access-token': app.accessToken }
-    })
-    if (contactRes.ok) {
-      const contact = (await contactRes.json()) as { name?: string; mobile?: string }
-      name = contact.name
-      mobile = contact.mobile
-    }
-  } catch {
-    // 联系人信息可选,失败不阻断
-  }
-
-  return { userid, name, mobile }
+  // 3) 姓名/手机号取 /contact/users/me(辅助展示;目录为准,手机号可能为空)
+  return { userid, name: me.nick, mobile: me.mobile }
 }
