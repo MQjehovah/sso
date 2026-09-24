@@ -186,7 +186,7 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
   }
   if (session) {
     if (prompts.includes('login')) {
-      return redirect(res, `/login?tx=${tx.id}&tab=qr`)
+      return redirect(res, `/login?tx=${tx.id}&tab=pwd`)
     }
     return html(res, 200, sessionConfirmPage({
       txId: tx.id,
@@ -197,7 +197,7 @@ export async function handleAuthorize(req: import('node:http').IncomingMessage, 
       clientName: client.name
     }))
   }
-  redirect(res, `/login?tx=${tx.id}&tab=qr`)
+  redirect(res, `/login?tx=${tx.id}&tab=pwd`)
 }
 
 /** continue/switch 共用校验:tx 存在 → 当前会话(无会话先回登录页) → CSRF(绑「sid:tx」);失败时已写响应并返回 null */
@@ -210,7 +210,7 @@ function validateAuthorizePost(req: import('node:http').IncomingMessage, res: im
   const cookies = parseCookies(req.headers.cookie)
   const session = getSession(cookies['sso_sid'])
   if (!session) {
-    redirect(res, `/login?tx=${tx.id}&tab=qr`)
+    redirect(res, `/login?tx=${tx.id}&tab=pwd`)
     return null
   }
   // CSRF 与会话绑定:token 以「会话 sid + 本次事务 tx」为 seed,防跨会话/跨事务重放
@@ -245,7 +245,7 @@ export async function handleAuthorizeSwitch(req: import('node:http').IncomingMes
   destroySession(checked.session.sid)
   res.setHeader('Set-Cookie', clearCookie())
   audit({ event: 'session_switch', ok: true, sub: checked.session.sub, client_id: checked.tx.client_id, ip })
-  redirect(res, `/login?tx=${checked.tx.id}&tab=qr`)
+  redirect(res, `/login?tx=${checked.tx.id}&tab=pwd`)
 }
 
 function issueCodeRedirect(res: import('node:http').ServerResponse, tx: PendingTx, session: SsoSession, opts?: { breakout?: boolean }): void {
@@ -288,9 +288,10 @@ export async function handleLoginPage(req: import('node:http').IncomingMessage, 
   if (!tx) {
     return html(res, 400, messagePage('登录事务已过期', '请返回应用重新发起登录', false))
   }
-  const client = getClient(tx.client_id)
-  const qrEnabled = cfgAll.dingtalkConfigured
-  const tab = url.searchParams.get('tab') === 'pwd' || !qrEnabled ? 'pwd' : 'qr'
+    const client = getClient(tx.client_id)
+    const qrEnabled = cfgAll.dingtalkConfigured
+    // 默认账号密码; 仅显式请求 tab=qr 且启用钉钉时展示扫码
+    const tab = url.searchParams.get('tab') === 'qr' && qrEnabled ? 'qr' : 'pwd'
   const error = url.searchParams.get('error') ?? undefined
   html(res, 200, loginPage({ txId, tab, clientName: client?.name, error, dingtalkEnabled: qrEnabled, csrf: issueCsrf(txId) }))
 }

@@ -58,8 +58,8 @@ export function loginPage(opts: {
   const hasTx = !!txId
   const tabs = hasTx
     ? `<div class="tabs">
-    ${dingtalkEnabled ? `<a href="/login?tx=${txId}&tab=qr" class="${tab === 'qr' ? 'on' : ''}">钉钉扫码</a>` : ''}
     <a href="/login?tx=${txId}&tab=pwd" class="${tab === 'pwd' || !dingtalkEnabled ? 'on' : ''}">账号密码</a>
+    ${dingtalkEnabled ? `<a href="/login?tx=${txId}&tab=qr" class="${tab === 'qr' ? 'on' : ''}">钉钉扫码</a>` : ''}
   </div>`
     : ''
   const panel = !hasTx
