@@ -15,6 +15,8 @@ export interface SsoSession {
   dept: string
   /** 邮箱(LDAP mail):下发给业务系统作为 email claim,并用作账号唯一标识 */
   email?: string
+  /** 手机号(LDAP mobile / 补充映射):下发给业务系统作为 mobile claim */
+  mobile?: string
   /** 钉钉用户 ID(目录取值,用于下发 dingtalk claim;其他可省略) */
   dingtalkUserId?: string
   /** 认证方式:qr(钉钉扫码)| pwd(账号密码) */
@@ -59,7 +61,7 @@ function prune(): void {
   }
 }
 
-export function createSession(sub: string, name: string, dept: string, authMode: 'qr' | 'pwd', dingtalkUserId?: string, email?: string): SsoSession {
+export function createSession(sub: string, name: string, dept: string, authMode: 'qr' | 'pwd', dingtalkUserId?: string, email?: string, mobile?: string): SsoSession {
   ensureLoaded()
   prune()
   const session: SsoSession = {
@@ -68,6 +70,7 @@ export function createSession(sub: string, name: string, dept: string, authMode:
     name,
     dept,
     email: email || undefined,
+    mobile: mobile || undefined,
     dingtalkUserId: dingtalkUserId || undefined,
     authMode,
     createdAt: Date.now(),
@@ -133,6 +136,8 @@ export interface AuthCode {
   name: string
   dept: string
   email?: string
+  /** 手机号(随 code 透传,供换 token 时签发 mobile claim;空则省略) */
+  mobile?: string
   /** 钉钉号(随 code 透传,供换 token 时签发 dingtalk claim;空则省略) */
   dingtalkUserId?: string
   nonce?: string
@@ -152,6 +157,8 @@ export interface RefreshTokenRecord {
   name: string
   dept: string
   email?: string
+  /** 手机号(随 refresh token 透传,刷新时用于签发 mobile claim;空则省略) */
+  mobile?: string
   /** 钉钉号(随 refresh token 透传,刷新时用于签发 dingtalk claim;空则省略) */
   dingtalkUserId?: string
   client_id: string
@@ -186,14 +193,14 @@ function rtPersist(): void {
 }
 
 /** 签发 refresh token(绑定用户与客户端;绝对上限由首次授权时间 authTime + ttlMs 决定,轮换不延长) */
-export function issueRefreshToken(sub: string, name: string, dept: string, clientId: string, dingtalkUserId: string | undefined, ttlMs: number, authTime: number, email?: string): string {
+export function issueRefreshToken(sub: string, name: string, dept: string, clientId: string, dingtalkUserId: string | undefined, ttlMs: number, authTime: number, email?: string, mobile?: string): string {
   rtLoad()
   const now = Date.now()
   for (const [t, r] of refreshTokens) if (r.expires_at <= now) refreshTokens.delete(t)
   const token = randomBytes(32).toString('hex')
   // 绝对上限:expires_at 始终从首次授权时间起算,轮换不延长
   refreshTokens.set(token, {
-    token, sub, name, dept, email: email || undefined, dingtalkUserId: dingtalkUserId || undefined,
+    token, sub, name, dept, email: email || undefined, mobile: mobile || undefined, dingtalkUserId: dingtalkUserId || undefined,
     client_id: clientId, expires_at: authTime + ttlMs, auth_time: authTime
   })
   rtPersist()
@@ -201,7 +208,7 @@ export function issueRefreshToken(sub: string, name: string, dept: string, clien
 }
 
 /** 校验并轮换:成功返回用户信息与首次授权时间并废弃旧 token(调用方应签发新 refresh token) */
-export function consumeRefreshToken(token: string, clientId: string): { sub: string; name: string; dept: string; email?: string; dingtalkUserId?: string; authTime: number } | null {
+export function consumeRefreshToken(token: string, clientId: string): { sub: string; name: string; dept: string; email?: string; mobile?: string; dingtalkUserId?: string; authTime: number } | null {
   rtLoad()
   const r = refreshTokens.get(token)
   if (!r) return null
@@ -210,7 +217,7 @@ export function consumeRefreshToken(token: string, clientId: string): { sub: str
   if (r.client_id !== clientId || r.expires_at <= Date.now()) return null
   // 老记录(本改动前写入)无 auth_time,按当前时间兜底,避免立即失效
   return {
-    sub: r.sub, name: r.name, dept: r.dept, email: r.email, dingtalkUserId: r.dingtalkUserId,
+    sub: r.sub, name: r.name, dept: r.dept, email: r.email, mobile: r.mobile, dingtalkUserId: r.dingtalkUserId,
     authTime: r.auth_time ?? Date.now()
   }
 }
@@ -263,6 +270,7 @@ export function issueCode(tx: PendingTx, session: SsoSession): string {
       name: session.name,
       dept: session.dept,
       email: session.email,
+      mobile: session.mobile,
       dingtalkUserId: session.dingtalkUserId,
     nonce: tx.nonce,
     code_challenge: tx.code_challenge,

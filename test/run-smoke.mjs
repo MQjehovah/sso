@@ -43,8 +43,8 @@ function setupFixtures() {
     { sub: '10001', name: '张三', dept: '平台组', mobile: '13800000001', email: 'zhangsan@xzrobot.com', dingtalkUserId: '10001', status: 'active', passwordHash: hashPassword('pass123') },
     { sub: '10002', name: '李四', dept: '业务组', mobile: '13800000002', dingtalkUserId: '10002', status: 'disabled' },
     { sub: '10003', name: '王五', dept: '平台组', mobile: '13800000003', dingtalkUserId: '10003', status: 'active' },
-    // 无钉钉号的用户:验证 dingtalk claim 空值时不下发
-    { sub: '10004', name: '赵六', dept: '平台组', mobile: '13800000004', dingtalkUserId: '', status: 'active', passwordHash: hashPassword('pass456') }
+    // 无钉钉号且无手机号的用户:验证 dingtalk/mobile claim 空值时不下发
+    { sub: '10004', name: '赵六', dept: '平台组', dingtalkUserId: '', status: 'active', passwordHash: hashPassword('pass456') }
   ]
   writeFileSync(new URL('./data/users.json', import.meta.url), JSON.stringify(users, null, 2))
 }
@@ -249,6 +249,7 @@ async function main() {
     const discoveryMeta = await (await fetch(`${SSO}/.well-known/openid-configuration`)).json()
     assert('discovery 声明 token-exchange grant', (discoveryMeta.grant_types_supported ?? []).includes('urn:ietf:params:oauth:grant-type:token-exchange'))
     assert('discovery 声明公共客户端认证方式 none', (discoveryMeta.token_endpoint_auth_methods_supported ?? []).includes('none'))
+    assert('discovery 声明 email/mobile claim', (discoveryMeta.claims_supported ?? []).includes('email') && (discoveryMeta.claims_supported ?? []).includes('mobile'))
 
     // ---- 密码通道 ----
     const jar1 = new Jar()
@@ -321,13 +322,16 @@ async function main() {
     })
     assert('id_token 验签通过且 sub/roles 正确', claims1.sub === '10001' && JSON.stringify(claims1.roles) === JSON.stringify(['admin']))
     assert('id_token 携带 dingtalk claim(目录有钉钉号)', claims1.dingtalk === '10001')
+    assert('id_token 携带 email/mobile claim(目录有值)', claims1.email === 'zhangsan@xzrobot.com' && claims1.mobile === '13800000001')
 
     const info = await oidc.fetchUserInfo(configuration, grant1.access_token, '10001')
     assert('userinfo 返回用户信息', info.sub === '10001' && info.name === '张三')
     assert('userinfo 返回 dingtalk', info.dingtalk === '10001')
+    assert('userinfo 返回 email/mobile', info.email === 'zhangsan@xzrobot.com' && info.mobile === '13800000001')
 
     const { payload: atClaims1 } = await jwtVerify(grant1.access_token, JWKS, { issuer: SSO, audience: 'test-web' })
     assert('access_token 携带 dingtalk claim', atClaims1.dingtalk === '10001')
+    assert('access_token 携带 mobile claim', atClaims1.mobile === '13800000001')
 
     // ---- TTL 断言:默认 access/id token 均为 600 秒,且与响应体 expires_in 一致 ----
     const atTtl1 = decodeJwt(grant1.access_token)
@@ -351,6 +355,7 @@ async function main() {
     const rfClaims = await jv2(rfBody.access_token, JW2, { issuer: SSO, audience: 'test-web' })
     assert('刷新后的 access_token 验签有效', rfClaims.payload.sub === '10001')
     assert('刷新后的 access_token 携带 dingtalk claim', rfClaims.payload.dingtalk === '10001')
+    assert('刷新后的 access_token 保留 mobile claim', rfClaims.payload.mobile === '13800000001')
     const rfAtTtl = decodeJwt(rfBody.access_token)
     const rfIdTtl = decodeJwt(rfBody.id_token)
     assert('refresh grant access_token TTL 为 600 秒', rfAtTtl.exp - rfAtTtl.iat === 600)
@@ -414,10 +419,13 @@ async function main() {
     })
     const { payload: claimsNo } = await jwtVerify(grantNo.id_token, JWKS, { issuer: SSO, audience: 'test-web', nonce: 'nno' })
     assert('无钉钉号用户 id_token 不含 dingtalk claim', claimsNo.sub === '10004' && !('dingtalk' in claimsNo))
+    assert('无手机号用户 id_token 不含 mobile claim', !('mobile' in claimsNo))
     const { payload: atNo } = await jwtVerify(grantNo.access_token, JWKS, { issuer: SSO, audience: 'test-web' })
     assert('无钉钉号用户 access_token 不含 dingtalk claim', !('dingtalk' in atNo))
+    assert('无手机号用户 access_token 不含 mobile claim', !('mobile' in atNo))
     const infoNo = await oidc.fetchUserInfo(configuration, grantNo.access_token, '10004')
     assert('无钉钉号用户 userinfo 不含 dingtalk', !('dingtalk' in infoNo))
+    assert('无手机号用户 userinfo 不含 mobile', !('mobile' in infoNo))
 
     // ---- 改密吊销 refresh token 与其它端 SSO 会话 ----
     // 用 10004:其密码(pass456)在本脚本其它段落从不被修改,且后续无依赖;
@@ -897,6 +905,7 @@ async function main() {
     assert('交换所得 JWT 继承身份 claims(name/dept/roles)', exClaims.name === '张三' && exClaims.dept === '平台组' && JSON.stringify(exClaims.roles) === JSON.stringify(['user']))
     assert('交换所得 JWT 继承 dingtalk claim(与目录一致)', exClaims.dingtalk === '10001')
     assert('交换所得 JWT 继承 email claim(与目录一致)', exClaims.email === 'zhangsan@xzrobot.com')
+    assert('交换所得 JWT 继承 mobile claim(与目录一致)', exClaims.mobile === '13800000001')
     assert('token 交换响应 expires_in=3600', exBody.expires_in === 3600)
     assert('交换所得 JWT TTL 为 3600 秒', exClaims.exp - exClaims.iat === 3600)
     assert('token 交换响应不含 id_token/refresh_token', !('id_token' in exBody) && !('refresh_token' in exBody))
