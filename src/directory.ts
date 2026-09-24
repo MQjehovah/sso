@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { Client } from 'ldapts'
-import { config } from './config.ts'
+import { config, type ProfileOverride } from './config.ts'
 
 /**
  * 用户目录抽象:
@@ -28,17 +28,39 @@ export interface DirectoryProvider {
   findByIdentifier(id: string): Promise<DirectoryUser | null>
 }
 
+/**
+ * 在目录结果上应用 SSO_PROFILE_OVERRIDES 补充映射(LDAP 缺属性场景,如 AD 无 dingtalkUserId):
+ * 仅非空字符串覆盖(空串保留目录原值);覆盖后 dingtalkUserId 保持 string。
+ */
+export function applyProfileOverrides(
+  user: DirectoryUser | null,
+  overrides: Record<string, ProfileOverride> = config.profileOverrides
+): DirectoryUser | null {
+  if (!user) return null
+  const o = overrides[user.sub]
+  if (!o) return user
+  const nonEmpty = (v: string | undefined): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
+  return {
+    ...user,
+    name: nonEmpty(o.name) ?? user.name,
+    dept: nonEmpty(o.dept) ?? user.dept,
+    email: nonEmpty(o.email) ?? user.email,
+    mobile: nonEmpty(o.mobile) ?? user.mobile,
+    dingtalkUserId: nonEmpty(o.dingtalkUserId) ?? user.dingtalkUserId
+  }
+}
+
 class LdapDirectory implements DirectoryProvider {
   private ldap = config.ldap!
 
   async findByDingtalkUserId(id: string): Promise<DirectoryUser | null> {
-    return this.search(`(${this.ldap.attrs.dingtalk}=${escapeFilter(id)})`)
+    return applyProfileOverrides(await this.search(`(${this.ldap.attrs.dingtalk}=${escapeFilter(id)})`))
   }
 
   async findByIdentifier(id: string): Promise<DirectoryUser | null> {
     const f = escapeFilter(id)
     // 标识 = 主标识属性(sub 对应属性)或手机号
-    return this.search(`(|(${this.ldap.attrs.sub}=${f})(${this.ldap.attrs.mobile}=${f}))`)
+    return applyProfileOverrides(await this.search(`(|(${this.ldap.attrs.sub}=${f})(${this.ldap.attrs.mobile}=${f}))`))
   }
 
   private async search(filter: string): Promise<DirectoryUser | null> {
@@ -83,11 +105,11 @@ class FileDirectory implements DirectoryProvider {
   }
 
   async findByDingtalkUserId(id: string): Promise<DirectoryUser | null> {
-    return this.users().find((u) => u.dingtalkUserId === id) ?? null
+    return applyProfileOverrides(this.users().find((u) => u.dingtalkUserId === id) ?? null)
   }
 
   async findByIdentifier(id: string): Promise<DirectoryUser | null> {
-    return this.users().find((u) => u.sub === id || u.mobile === id) ?? null
+    return applyProfileOverrides(this.users().find((u) => u.sub === id || u.mobile === id) ?? null)
   }
 }
 

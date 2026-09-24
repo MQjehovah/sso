@@ -20,6 +20,41 @@ function posIntEnv(name: string, def: number, min = 1): number {
   return n
 }
 
+/** 目录补充映射:key=sub,value=字段名→字符串(LDAP 缺属性/写不进去时在目录结果上覆盖,如 AD 无 dingtalkUserId) */
+export type ProfileOverride = Record<string, string>
+
+/** 解析 SSO_PROFILE_OVERRIDES(JSON);结构非法则整体按空处理并告警,不影响启动 */
+function parseProfileOverrides(raw: string | undefined): Record<string, ProfileOverride> {
+  const text = (raw ?? '').trim()
+  if (text === '') return {}
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch (err) {
+    console.warn(`[config] SSO_PROFILE_OVERRIDES 不是合法 JSON,已按空处理: ${(err as Error).message}`)
+    return {}
+  }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    console.warn('[config] SSO_PROFILE_OVERRIDES 必须是 {sub: {字段: 字符串}} 形式的对象,已按空处理')
+    return {}
+  }
+  for (const [sub, fields] of Object.entries(data)) {
+    if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) {
+      console.warn(`[config] SSO_PROFILE_OVERRIDES 条目 ${sub} 必须是 {字段: 字符串} 对象,已按空处理`)
+      return {}
+    }
+    for (const [key, value] of Object.entries(fields)) {
+      if (typeof value !== 'string') {
+        console.warn(`[config] SSO_PROFILE_OVERRIDES 条目 ${sub}.${key} 的值必须是字符串,已按空处理`)
+        return {}
+      }
+    }
+  }
+  return data as Record<string, ProfileOverride>
+}
+
+let profileOverridesCache: Record<string, ProfileOverride> | undefined
+
 export const config = {
   port: Number(process.env.SSO_PORT ?? 8091),
   /** 签发者标识与对外地址(生产如 https://sso.company.internal) */
@@ -72,6 +107,15 @@ export const config = {
     }
   },
   fileUsersPath: process.env.FILE_USERS_PATH ?? './data/users.json',
+
+  /**
+   * 目录结果补充映射(SSO_PROFILE_OVERRIDES JSON,形如 {"工号":{"dingtalkUserId":"...","mobile":"..."}})。
+   * 懒解析并缓存;仅非空字符串在目录结果上覆盖,空串/非法结构不生效(非法时整体按空并告警)。
+   */
+  get profileOverrides(): Record<string, ProfileOverride> {
+    if (!profileOverridesCache) profileOverridesCache = parseProfileOverrides(process.env.SSO_PROFILE_OVERRIDES)
+    return profileOverridesCache
+  },
 
   /** 是否信任反向代理传来的客户端 IP 头(x-real-ip/x-forwarded-for);默认关闭,仅当服务不直接对外暴露时开启 */
   get trustProxy(): boolean {

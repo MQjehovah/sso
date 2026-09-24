@@ -60,6 +60,7 @@ npm 脚本:
 | `LDAP_ATTR_STATUS` | `aiStatus` | 账号状态属性名 |
 | `LDAP_STATUS_DISABLED_FLAG` | `disabled` | status 属性中出现该子串即视为禁用 |
 | `FILE_USERS_PATH` | `./data/users.json` | 未配置 LDAP 时使用的文件目录 |
+| `SSO_PROFILE_OVERRIDES` | 未设置 | 目录结果补充映射(JSON:`{"工号":{"dingtalkUserId":"...","mobile":"...","email":"...","dept":"...","name":"..."}}`);用于 LDAP/AD 缺属性场景(如 AD 无 `dingtalkUserId`),仅非空字符串覆盖(空串保留目录原值),结构非法时整体按空并告警,不影响启动 |
 | `DINGTALK_APP_KEY` | 未设置 | 钉钉扫码应用 Key;与 Secret 同时存在才算「已配置扫码」 |
 | `DINGTALK_APP_SECRET` | 未设置 | 钉钉扫码应用 Secret |
 | `DINGTALK_API_BASE` | `https://api.dingtalk.com` | 钉钉新版 API 基地址 |
