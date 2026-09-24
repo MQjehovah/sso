@@ -34,17 +34,22 @@ export async function exchangeIdentity(authCode: string): Promise<DingtalkIdenti
   const cfg = config.dingtalk
 
   // 1) authCode → 用户级 token(含 unionId)
+  // 注意: 钉钉新版 v1.0 接口请求体为 camelCase(clientId/clientSecret/grantType)
   const utRes = await fetch(`${cfg.apiBase}/v1.0/oauth2/userAccessToken`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      client_id: cfg.appKey,
-      client_secret: cfg.appSecret,
+      clientId: cfg.appKey,
+      clientSecret: cfg.appSecret,
       code: authCode,
-      grant_type: 'authorization_code'
+      grantType: 'authorization_code'
     })
   })
-  if (!utRes.ok) throw new Error(`钉钉 userAccessToken 获取失败(HTTP ${utRes.status})`)
+  if (!utRes.ok) {
+    const body = await utRes.text().catch(() => '')
+    console.error(`[dingtalk] userAccessToken HTTP ${utRes.status}: ${body.slice(0, 300)}`)
+    throw new Error(`钉钉 userAccessToken 获取失败(HTTP ${utRes.status}${body ? ': ' + body.slice(0, 200) : ''})`)
+  }
   const ut = (await utRes.json()) as { accessToken?: string; unionId?: string }
   if (!ut.accessToken || !ut.unionId) throw new Error('钉钉 userAccessToken 响应异常')
 
