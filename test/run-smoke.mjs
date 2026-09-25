@@ -735,6 +735,23 @@ async function main() {
     assert('扫码 id_token 验签通过(sub=10003)', claims3.sub === '10003')
     assert('扫码通道 id_token 也携带 dingtalk claim', claims3.dingtalk === '10003')
 
+    // 扫码登录后同一浏览器再次发起授权:应命中 SSO 会话(确认页),无需重新输密码
+    const verifier4 = oidc.randomPKCECodeVerifier()
+    const authUrl4 = oidc.buildAuthorizationUrl(configuration, {
+      redirect_uri: REDIRECT_URI,
+      scope: 'openid profile',
+      state: 'st4',
+      nonce: 'n4',
+      code_challenge: await oidc.calculatePKCECodeChallenge(verifier4),
+      code_challenge_method: 'S256'
+    })
+    const r4 = await ssoFetch(jar2, authUrl4)
+    const page4 = await r4.text()
+    assert(
+      '扫码后再次授权命中 SSO 会话(确认页,无需密码)',
+      r4.status === 200 && page4.includes('继续以该账号登录') && !page4.includes('name="password"')
+    )
+
     // ---- 密码激活(扫码后 10 分钟内免当前密码) ----
     const sid = jar2.cookies.get('sso_sid') ?? ''
     const csrfQr = extractCsrf(await (await ssoFetch(jar2, `${SSO}/profile`)).text())
