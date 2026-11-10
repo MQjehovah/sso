@@ -12,7 +12,8 @@
       "refresh_ttl_hours": 12,
       "allowed_audiences": [
         "router",
-        "gateway"
+        "gateway",
+        "market"
       ],
       "dept_role_map": {
         "平台组": "admin",
@@ -28,6 +29,10 @@
       ],
       "default_role": "user",
       "refresh_ttl_hours": 12,
+      "allowed_audiences": [
+        "gateway",
+        "market"
+      ],
       "dept_role_map": {
         "平台组": "admin"
       }
