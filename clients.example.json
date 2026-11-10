@@ -13,6 +13,7 @@
       "allowed_audiences": [
         "router",
         "gateway",
+        "agent",
         "market"
       ],
       "dept_role_map": {
